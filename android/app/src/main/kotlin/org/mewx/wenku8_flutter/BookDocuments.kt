@@ -45,8 +45,9 @@ class BookDocuments internal constructor(
         it.moveToFirst() && (it.getInt(0) and DocumentsContract.Document.FLAG_SUPPORTS_WRITE) != 0
     } ?: false
 
-    private fun copy(uri: Uri, target: File, max: Long) =
+    private fun copy(uri: Uri, target: File, max: Long) {
         copySelectedBookDocument(activity.contentResolver, uri, target, max)
+    }
 
     private fun file(path: String): File {
         val candidate = File(path).canonicalFile
@@ -165,7 +166,7 @@ class BookDocuments internal constructor(
                 call.argument<Number>("offset")!!.toLong(), call.argument<Number>("size")!!.toLong(), call.argument<Number>("modified")!!.toLong()) }
             "releaseLinkedText" -> background(result) { links.release(call.argument<String>("reference") ?: ""); null }
             "openLinkedDocument" -> background(result, linked = true) { links.openDocument(call.argument<String>("reference") ?: "",
-                call.argument<Number>("size")?.toLong(), call.argument<Number>("modified")?.toLong(), call.argument<String>("purpose")) }
+                call.argument<Number>("size")?.toLong(), call.argument<Number>("modified")?.toLong(), call.argument<String>("purpose"), call.argument<Boolean>("computeDigest") == true) }
             "closeLinkedDocument" -> background(result) { links.closeDocument(call.argument<String>("lease") ?: ""); null }
             "prepareLinkedDocument" -> background(result, linked = true) {
                 val lease = links.openDocument(call.argument<String>("reference") ?: "")
@@ -392,20 +393,25 @@ internal fun releaseSelectedBookDocument(path: String, pickerRoot: File, importR
     check(!source.exists() || source.isFile && source.delete()) { "清理临时文件失败" }
 }
 
-internal fun copySelectedBookDocument(resolver: ContentResolver, uri: Uri, target: File, max: Long) {
+internal fun copySelectedBookDocument(
+    resolver: ContentResolver, uri: Uri, target: File, max: Long, hash: Boolean = false
+): String? {
+    val digest = if (hash) java.security.MessageDigest.getInstance("SHA-256") else null
     val partial = File(target.path + ".part")
     try {
         resolver.openInputStream(uri)?.use { input ->
             partial.outputStream().use { output ->
-                val buffer = ByteArray(64 * 1024); var size = 0L
+                val buffer = ByteArray(256 * 1024); var size = 0L
                 while (true) {
                     val count = input.read(buffer); if (count < 0) break
                     size += count; require(size <= max) { "文件超过 ${max / (1024 * 1024)} MiB 大小限制" }
+                    digest?.update(buffer, 0, count)
                     output.write(buffer, 0, count)
                 }
                 output.fd.sync()
             }
         } ?: error("无法读取所选文件")
         check(partial.renameTo(target)) { "保存临时文件失败" }
+        return digest?.hexDigest()
     } finally { partial.delete() }
 }

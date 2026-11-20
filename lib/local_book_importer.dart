@@ -290,9 +290,7 @@ class LocalBookImporter extends ChangeNotifier {
         final book = parent == null ? imported : books.book(parent.id)!;
         if (parent != null) await reconcileLocalSeries(books, library);
         await library.setShelfMembership(book.id, false, novel: book);
-        final group = library.combinedShelf
-            ? organization!.shelfSelected
-            : organization!.selected;
+        final group = organization!.selected;
         if (group != LocalLibraryPreferences.all &&
             LocalLibraryPreferences.categoryAuthor(group) == null) {
           if (categories == null) {
@@ -312,6 +310,7 @@ class LocalBookImporter extends ChangeNotifier {
       Future<Novel> importFile(
         String name,
         String path, {
+        String? stagedDigest,
         _ImportedCategoryBatch? categories,
       }) async {
         String? decoded;
@@ -320,14 +319,22 @@ class LocalBookImporter extends ChangeNotifier {
           if (name.toLowerCase().endsWith('.txt')) {
             decoded = await documents.decodeTextFile(path, encoding: encoding);
           }
-          imported = await books.importFile(
-            name,
-            path,
-            decodedPath: decoded,
-            options: importOptions,
-            recoverDamagedEpub:
-                !automatic && name.toLowerCase().endsWith('.epub'),
-          );
+          final epub = name.toLowerCase().endsWith('.epub');
+          imported = epub && stagedDigest != null
+              ? await books.importStagedEpub(
+                  name,
+                  path,
+                  stagedDigest,
+                  options: importOptions,
+                  recoverDamagedEpub: !automatic,
+                )
+              : await books.importFile(
+                  name,
+                  path,
+                  decodedPath: decoded,
+                  options: importOptions,
+                  recoverDamagedEpub: !automatic && epub,
+                );
           if ((copyLocal || !organization!.linkLocalBooks) &&
               books.isLinkedBook(imported.id)) {
             if (!books.isLinkedText(imported.id)) {
@@ -437,6 +444,7 @@ class LocalBookImporter extends ChangeNotifier {
               return importFile(
                 selected.name,
                 selected.path!,
+                stagedDigest: selected.stagedDigest,
                 categories: categories,
               );
             },

@@ -39,8 +39,8 @@ class WenkuHostPlugin : FlutterPlugin, ActivityAware, PluginRegistry.ActivityRes
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         val resolver = binding.applicationContext.contentResolver
-        bookImports = BookDocumentImportSession(File(binding.applicationContext.noBackupFilesDir, "book-import-staging")) { uri, target, max ->
-            copySelectedBookDocument(resolver, uri, target, max)
+        bookImports = BookDocumentImportSession(File(binding.applicationContext.noBackupFilesDir, "book-import-staging")) { uri, target, max, hash ->
+            copySelectedBookDocument(resolver, uri, target, max, hash)
         }
         bookOpens = BookOpenRequests(binding.applicationContext)
         toolsChannel = MethodChannel(binding.binaryMessenger, "org.mewx.wenku8/local_tools").also {

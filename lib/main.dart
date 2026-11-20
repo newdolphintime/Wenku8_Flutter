@@ -321,7 +321,7 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
     final id = state.readingHistoryIds.firstOrNull;
     if (id == null) {
       _navigator.currentState?.popUntil((route) => route.isFirst);
-      _home.currentState?.openShelf();
+      _home.currentState?.openLocalLibrary();
       return;
     }
     final book =
@@ -671,7 +671,7 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
         _lastTypeface = state.appFontId;
         return MaterialApp(
           navigatorKey: _navigator,
-          title: '轻小说文库',
+          title: '文库',
           locale: state.language.locale ?? _systemLocale,
           supportedLocales: const [
             Locale('zh', 'CN'),
@@ -776,7 +776,6 @@ class _NovelAppState extends State<NovelApp> with WidgetsBindingObserver {
                           key: _home,
                           state: state,
                           repository: repository,
-                          network: widget.network,
                         ),
                       );
                       final repo = repository;

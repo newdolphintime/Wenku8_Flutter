@@ -6,6 +6,7 @@ import java.io.File
 import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.charset.Charset
+import java.security.MessageDigest
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipInputStream
@@ -37,8 +38,26 @@ internal class BookDocumentInput private constructor(val file: File?, val descri
             override fun close() = owner.close()
         }
     }
+    fun sha256(): String {
+        val hash = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(256 * 1024)
+        var remaining = size
+        inputStream().use { input ->
+            while (remaining > 0) {
+                val count = input.read(buffer, 0, minOf(remaining, buffer.size.toLong()).toInt())
+                check(count > 0) { "原文件已变化，请重新选择原文件" }
+                hash.update(buffer, 0, count)
+                remaining -= count
+            }
+        }
+        return hash.hexDigest()
+    }
+
     fun zip(): BookDocumentZip = file?.let { BookDocumentZip.file(it) } ?: BookDocumentZip.stream(this)
 }
+
+internal fun MessageDigest.hexDigest(): String =
+    digest().joinToString("") { "%02x".format(it.toInt() and 255) }
 
 /** ZipFile remains the fast path for managed files. SAF archives use bounded
  * ZipInputStreams; required converted resources are saved, never the raw ZIP. */

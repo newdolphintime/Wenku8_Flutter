@@ -129,7 +129,7 @@ Report bugs through [Issues](https://github.com/mikufoxxx/Wenku8_Flutter/issues)
 <details>
 <summary><b>About the source snapshot</b></summary>
 
-This repository shares selected implementation code for reference. It contains references to modules not included in the snapshot, cannot be built independently, and is not the complete corresponding source for the release packages. Previously distributed release packages included the full app functionality. GitHub's automatically generated “Source code” archives are not app installers.
+This fork builds **文库**, a local Android reader with fast EPUB imports and two home tabs. The feature overview above describes the upstream project. See the build guide for this fork’s changes, package identity, and Android toolchain.
 
 [Source checks](https://github.com/mikufoxxx/Wenku8_Flutter/actions/workflows/flutter-ci.yml) validate only the public file inventory and publication boundaries. They do not build or modify release packages.
 

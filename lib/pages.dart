@@ -70,7 +70,6 @@ import 'local_text_reference.dart';
 import 'local_text_recovery.dart';
 import 'native_effects.dart' show NativeGlassGroup;
 import 'lan_handoff_widgets.dart';
-import 'network_status.dart';
 import 'novel_feed_controller.dart';
 import 'offline_repository.dart';
 import 'offline_widgets.dart';
@@ -134,26 +133,21 @@ class HomeShell extends StatefulWidget {
     super.key,
     required this.state,
     required this.repository,
-    this.network,
   });
   final LibraryState state;
   final NovelRepository repository;
-  final NetworkStatus? network;
 
   @override
   State<HomeShell> createState() => HomeShellState();
 }
 
 class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
-  void openShelf() {
+  void openLocalLibrary() {
     if (_searchOpen) _closeSearch();
-    _selectTab(_navigation.destination(1));
+    _selectTab(0);
   }
 
-  late final _navigation = HomeNavigation(widget.state, widget.network);
-  late List<int> _visibleTabs;
-  final _visitedTabs = <int>{};
-  bool _catalogStarted = false;
+  final _visitedTabs = <int>{0};
   static final _scrollPlatforms = TargetPlatform.values.toSet();
   late final _tabScrolls = [
     for (var i = 0; i < _dockItems.length; i++)
@@ -161,29 +155,12 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   ];
   final _searchScroll = ScrollController(debugLabel: 'home-search');
   static const _dockItems = [
-    GlassDockItem(CupertinoIcons.house, '发现'),
-    GlassDockItem(CupertinoIcons.book, '书架', symbol: ArchiveSymbol.shelf),
     GlassDockItem(CupertinoIcons.folder, '本地'),
     GlassDockItem(CupertinoIcons.person_crop_circle, '我的'),
   ];
-  late final _catalog = NovelFeedController(
-    widget.repository,
-    initialItems: 60,
-  );
-  late final _searchFeed = NovelFeedController(widget.repository, search: true)
-    ..searchField = BookSearchField.title;
   LocalBookStore? get _localBooks => widget.repository is OfflineNovelRepository
       ? (widget.repository as OfflineNovelRepository).local
       : null;
-  late final _shelfSearch = NovelFeedController(
-    LibrarySearchRepository(
-      source: widget.repository,
-      state: widget.state,
-      local: _localBooks,
-      cachedOnly: () => _navigation.readableShelfOnly,
-    ),
-    search: true,
-  )..searchField = BookSearchField.title;
   late final _localSearch = NovelFeedController(
     LibrarySearchRepository(
       source: widget.repository,
@@ -193,12 +170,6 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     ),
     search: true,
   )..searchField = BookSearchField.title;
-  int _searchScope = 0;
-  NovelFeedController get _activeSearch => switch (_searchScope) {
-    1 => _shelfSearch,
-    2 => _localSearch,
-    _ => _searchFeed,
-  };
   final _localLibrary = LocalLibraryController();
   List<Widget> _pageWidgets = const [];
   List<WidgetBuilder> _headers = const [];
@@ -214,9 +185,7 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     debugLabel: 'inline-search',
     canRequestFocus: false,
   );
-  bool _searchStarted = false;
   bool? _routeCurrent;
-  String _lastRecordedSearch = '';
   late final AnimationController _searchExpansion =
       AnimationController(
         vsync: this,
@@ -242,43 +211,16 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
-    _visibleTabs = _navigation.tabs;
-    _tab = _navigation.destination(widget.state.startPage.index);
-    _visitedTabs.add(_tab);
-    _navigation.addListener(_navigationChanged);
     _searchText.addListener(_searchEdited);
-    _searchFeed.addListener(_searchSucceeded);
-    widget.state.blockedTagsChanges.addListener(_blockedTagsChanged);
-    _blockedTagsChanged();
     if (widget.repository case final OfflineNovelRepository offline) {
       unawaited(offline.loadCache().catchError((Object _) {}));
     }
-    final discover = DiscoverPage(
-      books: const [],
-      feed: _catalog,
-      state: widget.state,
-      repository: widget.repository,
-      showHeader: false,
-      compactMainPageControls: true,
-      onSearch: _openSearch,
-    );
-    final shelf = ShelfPage(
-      books: const [],
-      state: widget.state,
-      repository: widget.repository,
-      showHeader: false,
-      compactMainPageControls: true,
-      onSearch: _openSearch,
-      navigation: _navigation,
-    );
     final settings = MyPage(
       state: widget.state,
       repository: widget.repository,
       showHeader: false,
     );
-    final local = widget.repository is OfflineNovelRepository
-        ? (widget.repository as OfflineNovelRepository).local
-        : null;
+    final local = _localBooks;
     final localPage = local == null
         ? null
         : LocalLibraryPage(
@@ -305,16 +247,12 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
             ),
           );
     _headers = [
-      discover.buildHeader,
-      shelf.buildHeader,
       localPage?.buildHeader ??
           (_) => const ArchiveMasthead(title: '本地', code: '03 / LOCAL ARCHIVE'),
       settings.buildHeader,
     ];
     _pageWidgets =
         [
-              discover,
-              shelf,
               localPage ?? const Center(child: AppText('当前演示数据源未启用本地书库')),
               settings,
             ].indexed
@@ -326,37 +264,6 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
               ),
             )
             .toList(growable: false);
-    _ensureCatalog();
-  }
-
-  void _ensureCatalog() {
-    if (_tab != 0 || !_visibleTabs.contains(0)) return;
-    if (!_catalogStarted) {
-      _catalogStarted = true;
-      _catalog.loadInitial();
-    } else if (_catalog.items.isEmpty && _catalog.error != null) {
-      _catalog.retry();
-    }
-  }
-
-  void _blockedTagsChanged() {
-    _catalog.setBlockedTags(widget.state.blockedTags);
-    _searchFeed.setBlockedTags(widget.state.blockedTags);
-  }
-
-  void _navigationChanged() {
-    if (!mounted) return;
-    final tabs = _navigation.tabs;
-    final next = _navigation.destination(_tab);
-    if (_searchOpen && !tabs.contains(_searchScope)) _closeSearch();
-    setState(() {
-      _visibleTabs = tabs;
-    });
-    if (next != _tab) _selectTab(next);
-    if (_searchOpen && _searchScope == 1) {
-      _shelfSearch.refresh();
-    }
-    _ensureCatalog();
   }
 
   void _routeChanged(ModalRoute<dynamic>? route) {
@@ -367,14 +274,12 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       _searchFocusPending = false;
     } else if (current == true &&
         _routeCurrent == false &&
-        _searchOpen &&
-        _searchScope != 0) {
+        _searchOpen) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted &&
             _searchOpen &&
-            _searchScope != 0 &&
             _routeCurrent == true) {
-          _activeSearch.refresh();
+          _localSearch.refresh();
         }
       });
     }
@@ -383,16 +288,10 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
 
   @override
   void dispose() {
-    widget.state.blockedTagsChanges.removeListener(_blockedTagsChanged);
-    _navigation.removeListener(_navigationChanged);
-    _navigation.dispose();
     _pageTransition.dispose();
     _searchExpansion.dispose();
     _searchText.dispose();
     _searchFocus.dispose();
-    _catalog.dispose();
-    _searchFeed.dispose();
-    _shelfSearch.dispose();
     _localSearch.dispose();
     _localLibrary.dispose();
     for (final scroll in _tabScrolls) {
@@ -407,20 +306,13 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
 
   void _openSearch() {
     _searchFocus.canRequestFocus = true;
-    _searchScope = _tab;
-    final feed = _activeSearch;
+    final feed = _localSearch;
     _searchText.value = TextEditingValue(
       text: feed.query,
       selection: TextSelection.collapsed(offset: feed.query.length),
     );
     _searchFocusPending = true;
-    if (_searchScope != 0) {
-      feed.refresh();
-    } else if (!_searchStarted ||
-        (_searchFeed.page == 0 && !_searchFeed.loading)) {
-      _searchStarted = true;
-      _searchFeed.loadInitial();
-    }
+    feed.refresh();
     setState(() {
       _searchOpen = true;
       _searchMounted = true;
@@ -454,7 +346,7 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   void _closeSearch() {
     _dismissSearchKeyboard();
     _searchFocus.canRequestFocus = false;
-    _activeSearch.cancelScheduledSearch();
+    _localSearch.cancelScheduledSearch();
     setState(() {
       _searchOpen = false;
       _searchCovered = false;
@@ -469,37 +361,10 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   void _searchEdited() {
     if (!_searchOpen) return;
     if (!_searchText.value.composing.isCollapsed) {
-      _activeSearch.cancelScheduledSearch();
+      _localSearch.cancelScheduledSearch();
       return;
     }
-    _activeSearch.scheduleSearch(_searchText.text);
-  }
-
-  void _searchSucceeded() {
-    if (_searchScope != 0 ||
-        _searchFeed.loading ||
-        _searchFeed.error != null ||
-        _searchFeed.page < 1) {
-      return;
-    }
-    final query = _searchFeed.query.trim();
-    if (query == _lastRecordedSearch) return;
-    _lastRecordedSearch = query;
-    unawaited(
-      widget.state.recordSearch(query).catchError((Object _) {
-        if (_lastRecordedSearch == query) _lastRecordedSearch = '';
-        if (mounted) showNovelFeedback(context, '最近搜索保存失败');
-      }),
-    );
-  }
-
-  void _recallSearch(String query) {
-    _searchText.value = TextEditingValue(
-      text: query,
-      selection: TextSelection.collapsed(offset: query.length),
-    );
-    _searchFeed.searchFor(query);
-    _dismissSearchKeyboard();
+    _localSearch.scheduleSearch(_searchText.text);
   }
 
   void _scrollTabToTop(int index) {
@@ -520,8 +385,8 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   }
 
   void _selectTab(int index) {
-    if (index == _tab || !_visibleTabs.contains(index)) return;
-    if (index == 2) _localLibrary.refresh?.call();
+    if (index == _tab) return;
+    if (index == 0) _localLibrary.refresh?.call();
     FocusManager.instance.primaryFocus?.unfocus();
     final reduceMotion =
         widget.state.reduceMotion || MediaQuery.disableAnimationsOf(context);
@@ -538,7 +403,6 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       _tab = index;
       _visitedTabs.add(index);
     });
-    _ensureCatalog();
   }
 
   Widget _tabPlane(int index) {
@@ -638,25 +502,12 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
                                   top: _searchTabsHeight(context),
                                 ),
                                 child: InlineSearchResults(
-                                  feed: _activeSearch,
+                                  feed: _localSearch,
                                   state: widget.state,
                                   repository: widget.repository,
                                   onOpenBook: _dismissSearchKeyboard,
-                                  allowBlockedTags: _searchScope == 0,
-                                  showSources:
-                                      _searchScope == 1 &&
-                                      widget.state.combinedShelf,
-                                  fromCache:
-                                      _searchScope == 1 &&
-                                      _navigation.readableShelfOnly,
-                                  onRecall: _searchScope == 0
-                                      ? _recallSearch
-                                      : null,
-                                  emptyQueryTitle: switch (_searchScope) {
-                                    1 => '书架中的书籍',
-                                    2 => '本地书籍',
-                                    _ => '你可能会喜欢',
-                                  },
+                                  allowBlockedTags: false,
+                                  emptyQueryTitle: '本地书籍',
                                 ),
                               ),
                             ),
@@ -794,14 +645,11 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
                     child: LibraryReflowPart(
                       child: GlassDock(
                         key: const ValueKey('liquid-dock'),
-                        selectedIndex: _visibleTabs.indexOf(_tab),
+                        selectedIndex: _tab,
                         reduceMotion: widget.state.reduceMotion,
-                        onSelected: (slot) => _selectTab(_visibleTabs[slot]),
-                        onReselected: (slot) =>
-                            _scrollTabToTop(_visibleTabs[slot]),
-                        items: [
-                          for (final page in _visibleTabs) _dockItems[page],
-                        ],
+                        onSelected: _selectTab,
+                        onReselected: _scrollTabToTop,
+                        items: _dockItems,
                       ),
                     ),
                   ),
@@ -842,18 +690,9 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
                 opacity: 1 - expansion,
                 child: Align(
                   alignment: Alignment.centerLeft,
-                  child: ArchiveMasthead(
-                    title: switch (_searchScope) {
-                      1 => '书架',
-                      2 => '本地',
-                      _ => '轻小说文库',
-                    },
-                    code: switch (_searchScope) {
-                      1 => '02 / PERSONAL ARCHIVE',
-                      2 => '03 / LOCAL ARCHIVE',
-                      _ => 'WENKU8 / READING ARCHIVE',
-                    },
-                    brand: _searchScope == 0,
+                  child: const ArchiveMasthead(
+                    title: '本地',
+                    code: '03 / LOCAL ARCHIVE',
                   ),
                 ),
               ),
@@ -912,11 +751,11 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
           inputKey: const ValueKey('expanded-search-input'),
           embedded: true,
           showLeading: false,
-          hint: _activeSearch.searchField.hint,
+          hint: _localSearch.searchField.hint,
           controller: _searchText,
           focusNode: _searchFocus,
           onSubmitted: (query) {
-            _activeSearch.searchFor(query);
+            _localSearch.searchFor(query);
             _dismissSearchKeyboard();
           },
         ),
@@ -942,7 +781,7 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     child: AppControls.segments<BookSearchField>(
       context,
       key: const ValueKey('home-search-tabs'),
-      groupValue: _activeSearch.searchField,
+      groupValue: _localSearch.searchField,
       children: {
         BookSearchField.title: Text(appText(context, '书名')),
         BookSearchField.author: Text(appText(context, '作者')),
@@ -956,9 +795,9 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
   );
 
   Future<void> _selectSearchField(BookSearchField field) async {
-    if (_activeSearch.searchField == field) return;
+    if (_localSearch.searchField == field) return;
     _dismissSearchKeyboard();
-    final pending = _activeSearch.selectSearchField(field);
+    final pending = _localSearch.selectSearchField(field);
     setState(() {});
     await pending;
   }
@@ -1017,7 +856,7 @@ class DiscoverPage extends StatelessWidget {
     children: [
       Expanded(
         child: const ArchiveMasthead(
-          title: '轻小说文库',
+          title: '文库',
           code: 'WENKU8 / READING ARCHIVE',
           brand: true,
         ),
@@ -3177,43 +3016,11 @@ class SettingsPage extends StatelessWidget {
             keyName: 'settings-direct-reading',
             icon: CupertinoIcons.book_fill,
             title: '点书直接阅读',
-            description: '选择适用页面（可多选），从上次位置继续',
-            value: state.directReading,
-            onChanged: state.setDirectReading,
-          ),
-          if (state.directReading)
-            Padding(
-              padding: const EdgeInsets.only(top: 8, left: 36),
-              child: Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  for (final page in ReadingEntry.values)
-                    GlassTextButton(
-                      key: ValueKey('settings-direct-reading-${page.name}'),
-                      selected: state.directReadingOn(page),
-                      onPressed: () => _savePreference(
-                        context,
-                        () => state.setDirectReadingPages({
-                          ...state.directReadingPages.where((p) => p != page),
-                          if (!state.directReadingOn(page)) page,
-                        }),
-                      ),
-                      child: AppText(page.label),
-                    ),
-                ],
-              ),
+            description: '在本地书库点书后从上次位置继续',
+            value: state.directReadingOn(ReadingEntry.local),
+            onChanged: (value) => state.setDirectReadingPages(
+              value ? {ReadingEntry.local} : {},
             ),
-          const Divider(height: 22),
-          GlassSettingMenu<AppStartPage>(
-            key: const ValueKey('settings-start-page'),
-            icon: CupertinoIcons.house,
-            label: '启动页面',
-            value: state.startPage,
-            options: {for (final page in AppStartPage.values) page: page.label},
-            reduceMotion: state.reduceMotion,
-            onChanged: (page) =>
-                _savePreference(context, () => state.setStartPage(page)),
           ),
           const Divider(height: 22),
           _toggleSetting(
@@ -3224,40 +3031,6 @@ class SettingsPage extends StatelessWidget {
             description: '打开应用后进入最近读过的书',
             value: state.openRecentOnLaunch,
             onChanged: state.setOpenRecentOnLaunch,
-          ),
-          const Divider(height: 22),
-          _toggleSetting(
-            context,
-            keyName: 'settings-combined-shelf',
-            icon: CupertinoIcons.square_stack,
-            title: '合并书架',
-            description: '收藏与本地书统一显示在书架，试读缓存不加入',
-            value: state.combinedShelf,
-            onChanged: (value) => state.setNavigationMode(combinedShelf: value),
-          ),
-          const Divider(height: 22),
-          _toggleSetting(
-            context,
-            keyName: 'settings-adapt-offline',
-            icon: CupertinoIcons.wifi_slash,
-            title: '离线适配',
-            description: state.combinedShelf
-                ? '断网后隐藏发现，书架保留已缓存的收藏和本地书籍'
-                : '断网后隐藏发现，书架只显示已缓存的收藏',
-            value: state.adaptWhenOffline,
-            onChanged: (value) =>
-                state.setNavigationMode(adaptWhenOffline: value),
-          ),
-          const Divider(height: 22),
-          _toggleSetting(
-            context,
-            keyName: 'settings-local-reader-mode',
-            icon: CupertinoIcons.book,
-            title: '阅读器模式',
-            description: state.combinedShelf ? '只显示离线可读的合并书架和我的' : '只显示本地和我的',
-            value: state.localReaderMode,
-            onChanged: (value) =>
-                state.setNavigationMode(localReaderMode: value),
           ),
         ],
       ),

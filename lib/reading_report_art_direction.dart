@@ -656,7 +656,7 @@ abstract class _ReportArtDirectionComposer extends _ReportAnalysisComposer {
     var end = top + 19;
     end +=
         printText(
-          options.signature ? '轻小说文库' : name,
+          options.signature ? '文库' : name,
           x,
           end,
           width: width,

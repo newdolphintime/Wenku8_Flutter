@@ -8,7 +8,7 @@ import java.util.UUID
 /** One selected original at a time, without keeping a batch of copied books. */
 internal class BookImportQueue<T>(
     private val root: File,
-    private val copy: (T, File, Long) -> Unit,
+    private val copy: (T, File, Long, Boolean) -> String?,
 ) {
     private data class Selection<T>(val source: T, val name: String, val limit: Long)
     private val selections = mutableMapOf<String, Selection<T>>()
@@ -25,9 +25,13 @@ internal class BookImportQueue<T>(
         check(active?.exists() != true) { "请等待当前书籍导入完成后重试" }
         val target = File.createTempFile("import-", ".source", root)
         try {
-            copy(selection.source, target, selection.limit)
+            val digest = copy(selection.source, target, selection.limit, selection.name.endsWith(".epub", true))
             active = target
-            return mapOf("name" to selection.name, "path" to target.path)
+            return buildMap {
+                put("name", selection.name)
+                put("path", target.path)
+                if (digest != null) put("stagedDigest", digest)
+            }
         } catch (error: Exception) {
             target.delete()
             File(target.path + ".part").delete()
@@ -40,7 +44,7 @@ internal class BookImportQueue<T>(
 
 /** Engine-owned, not Activity-owned: rotation/recreation must not revoke the
  * remaining selections or delete a file the Dart importer is still reading. */
-internal class BookDocumentImportSession<T>(parent: File, copy: (T, File, Long) -> Unit) {
+internal class BookDocumentImportSession<T>(parent: File, copy: (T, File, Long, Boolean) -> String?) {
     private val work = lazy { BookImportWorkspace(parent) }
     val root get() = work.value.root
     val initialized get() = work.isInitialized()

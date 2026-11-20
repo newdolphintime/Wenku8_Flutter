@@ -269,7 +269,8 @@ ImportedBook _epub(
   bool coverOnly = false,
   bool normalizeMarkup = true,
 }) {
-  final zip = archive ?? boundedZip(input.bytes, maxSize: 1024 * 1024 * 1024);
+  final zip =
+      archive ?? boundedZip(input.bytes, maxSize: maxExpandedLocalEpubBytes);
   final files = {
     for (final f in zip)
       if (f.isFile) f.name: f,
@@ -1386,6 +1387,7 @@ class _ImportJob {
     this.path,
     this.text,
     this.decodedPath,
+    this.stagedDigest,
     this.options = const LocalImportOptions(),
     this.optionsById = const {},
     this.epubLayouts = const {},
@@ -1399,7 +1401,7 @@ class _ImportJob {
   final String root, name;
   final Map<int, String> known;
   final LocalBookInput? input;
-  final String? path, text, decodedPath;
+  final String? path, text, decodedPath, stagedDigest;
   final LocalImportOptions options;
   final Map<int, LocalImportOptions> optionsById;
   final Map<int, bool> epubLayouts;
@@ -1428,9 +1430,11 @@ Future<_ImportedFile> _importOriginal(_ImportJob job) async {
       (file == null ? null : LocalDocumentInput.file(file.path));
   final size = job.input?.bytes.length ?? document!.length;
   _validateInput(job.name, size);
-  final digest = job.input == null
-      ? (await sha256.bind(document!.bytes()).first).toString()
-      : sha256.convert(job.input!.bytes).toString();
+  final digest = job.stagedDigest ??
+      document?.verifiedDigest ??
+      (job.input == null
+          ? (await sha256.bind(document!.bytes()).first).toString()
+          : sha256.convert(job.input!.bytes).toString());
   final id =
       localBookIdStart |
       (int.parse(digest.substring(0, 8), radix: 16) & 0x1fffffff);
@@ -1478,7 +1482,10 @@ Future<_ImportedFile> _importOriginal(_ImportJob job) async {
       final verifiedImages = <String>{};
       final stream = buffer?.stream ?? InputMemoryStream(job.input!.bytes);
       final recovered = job.recoverDamagedEpub
-          ? readLocalBookArchiveForRecovery(stream, maxSize: 1024 * 1024 * 1024)
+          ? readLocalBookArchiveForRecovery(
+              stream,
+              maxSize: maxExpandedLocalEpubBytes,
+            )
           : null;
       parsed = _epub(
         LocalBookInput(job.name, Uint8List(0)),
@@ -1486,7 +1493,7 @@ Future<_ImportedFile> _importOriginal(_ImportJob job) async {
         digest,
         archive:
             recovered?.archive ??
-            readLocalBookArchive(stream, maxSize: 1024 * 1024 * 1024),
+            readLocalBookArchive(stream, maxSize: maxExpandedLocalEpubBytes),
         damagedEntries: recovered?.damagedEntries,
         autoTitles: options.autoTitles,
         mergeUnlistedIllustrations: options.inlineEpubImages,
@@ -1604,7 +1611,7 @@ Future<_ImportedFile> _importOriginal(_ImportJob job) async {
       await File(
         '${staging.path}/original',
       ).writeAsBytes(job.input!.bytes, flush: true);
-    } else {
+    } else if (job.stagedDigest == null) {
       await file.copy('${staging.path}/original');
     }
     if (text != null) {
@@ -1672,6 +1679,15 @@ Future<_ImportedFile> _importOriginal(_ImportJob job) async {
     await File(
       '${staging.path}/book.json',
     ).writeAsString(metadata, flush: true);
+    if (job.stagedDigest != null) {
+      // Adopt the private copy only after parsing and metadata writes succeed.
+      final destination = '${staging.path}/original';
+      try {
+        await file!.rename(destination);
+      } on FileSystemException {
+        await file!.copy(destination);
+      }
+    }
     await staging.rename('${job.root}/$id');
     return _ImportedFile(id, digest, parsed.novel, source);
   } on ArchiveException {
@@ -1702,7 +1718,7 @@ List<String> _readImageSizing(_ImageSizingJob job) {
       LocalBookInput(job.name, Uint8List(0)),
       job.id,
       job.digest,
-      archive: readLocalBookArchive(stream, maxSize: 512 * 1024 * 1024),
+      archive: readLocalBookArchive(stream, maxSize: maxExpandedLocalEpubBytes),
       saveImage: (_, _) {},
       // Keep the stored directory layout and bookmark offsets; this migration
       // changes image sizing only.
@@ -2288,12 +2304,28 @@ class LocalBookStore extends ChangeNotifier
     recoverDamagedEpub: recoverDamagedEpub,
   );
 
+  /// Adopts an app-private Android EPUB staged and hashed by the file picker.
+  Future<Novel> importStagedEpub(
+    String name,
+    String path,
+    String digest, {
+    required LocalImportOptions options,
+    required bool recoverDamagedEpub,
+  }) => _import(
+    name,
+    path: path,
+    stagedDigest: digest,
+    options: options,
+    recoverDamagedEpub: recoverDamagedEpub,
+  );
+
   Future<Novel> _import(
     String name, {
     LocalBookInput? input,
     String? path,
     String? text,
     String? decodedPath,
+    String? stagedDigest,
     LocalImportOptions options = const LocalImportOptions(),
     bool requireMatchingOptions = false,
     Map<int, LocalImportOptions> optionsById = const {},
@@ -2321,6 +2353,7 @@ class LocalBookStore extends ChangeNotifier
           path: path,
           text: text,
           decodedPath: decodedPath,
+          stagedDigest: stagedDigest,
           options: options.effective,
           optionsById: optionsById,
           epubLayouts: _epubLayouts,

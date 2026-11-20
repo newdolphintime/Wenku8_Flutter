@@ -30,6 +30,7 @@ internal class BookArchiveImport(
         fun limit(name: String) = when (name.substringAfterLast('.').lowercase()) {
             "txt", "fb2", "rtf", "doc" -> BookTextDecoder.MAX_TEXT
             "html", "htm", "xhtml", "md", "markdown" -> 32L * 1024 * 1024
+            "epub" -> Long.MAX_VALUE
             "zip" -> MAX_ARCHIVE
             in kindle -> 256L * 1024 * 1024
             else -> 512L * 1024 * 1024
@@ -163,7 +164,7 @@ internal class BookArchiveImport(
                     zip.closeEntry()
                 }
             }
-            require(output.length() <= limit("book.epub")) { "转换后的 EPUB 超过 512 MiB" }
+            require(output.length() <= MAX_ARCHIVE) { "转换后的 EPUB 超过 512 MiB" }
             return mapOf("name" to name.substringBeforeLast('.') + ".epub", "path" to output.path)
         } catch (failure: Exception) {
             output.delete()

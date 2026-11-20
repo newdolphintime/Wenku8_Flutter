@@ -2,6 +2,9 @@
 const maxLocalTextBytes = 128 * 1024 * 1024;
 const maxLocalEpubBytes = 512 * 1024 * 1024;
 const maxLocalArchiveBytes = 512 * 1024 * 1024;
+const maxExpandedLocalEpubBytes = 2 * 1024 * 1024 * 1024;
+// File lengths are signed 64-bit values. EPUB has no separate file-size cap.
+const _maxFileLength = 0x7fffffffffffffff;
 const bookFormatLabels = <String, String>{
   'epub': 'EPUB',
   'txt': 'TXT',
@@ -36,9 +39,9 @@ const bookImportFormatsSummary =
 const iosBookImportFormatsSummary =
     'TXT、EPUB、Kindle（MOBI / AZW / AZW3 / PRC）、FB2、PDF、DOCX、RTF、HTML 和 Markdown，支持 ZIP 批量导入';
 const bookImportLimitsSummary =
-    'EPUB / PDF / DOCX / ZIP：512 MiB；Kindle：256 MiB；TXT / FB2 / RTF / DOC：128 MiB；HTML / Markdown：32 MiB。ZIP 展开后合计不超过 1 GiB。';
+    'EPUB：展开后合计不超过 2 GiB；PDF / DOCX / ZIP：512 MiB；Kindle：256 MiB；TXT / FB2 / RTF / DOC：128 MiB；HTML / Markdown：32 MiB。ZIP 展开后合计不超过 1 GiB。';
 const iosBookImportLimitsSummary =
-    'EPUB / PDF / DOCX / ZIP：512 MiB；Kindle：256 MiB；TXT / FB2 / RTF：128 MiB；HTML / Markdown：32 MiB。ZIP 展开后合计不超过 1 GiB。';
+    'EPUB：展开后合计不超过 2 GiB；PDF / DOCX / ZIP：512 MiB；Kindle：256 MiB；TXT / FB2 / RTF：128 MiB；HTML / Markdown：32 MiB。ZIP 展开后合计不超过 1 GiB。';
 
 bool supportsBookImport(String name) => RegExp(
   r'\.(txt|epub|mobi|azw|azw3|prc|fb2|pdf|docx?|rtf|html?|xhtml|md|markdown|zip)$',
@@ -48,7 +51,8 @@ bool supportsBookImport(String name) => RegExp(
 int localBookByteLimit(String name) =>
     switch (name.split('.').last.toLowerCase()) {
       'zip' => maxLocalArchiveBytes,
-      'epub' || 'pdf' || 'docx' => maxLocalEpubBytes,
+      'epub' => _maxFileLength,
+      'pdf' || 'docx' => maxLocalEpubBytes,
       'mobi' || 'azw' || 'azw3' || 'prc' => 256 * 1024 * 1024,
       'html' || 'htm' || 'xhtml' || 'md' || 'markdown' => 32 * 1024 * 1024,
       _ => maxLocalTextBytes,

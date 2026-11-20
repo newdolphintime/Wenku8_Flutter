@@ -23,7 +23,7 @@ Future<_StoredNavigation> _readStoredNavigation(
   try {
     final archive = readLocalBookArchive(
       buffer.stream,
-      maxSize: 1024 * 1024 * 1024,
+      maxSize: maxExpandedLocalEpubBytes,
     );
     final mediaFile = File('${folder.path}/media.json');
     final media = await mediaFile.exists()

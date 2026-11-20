@@ -129,7 +129,7 @@
 <details>
 <summary><b>源码快照说明</b></summary>
 
-仓库提供部分实现供参考，包含未随快照提供的模块引用，不能独立构建，也不是 Release 安装包的完整对应源码。此前发行的安装包为完整功能版本；GitHub 自动生成的 Source code 压缩包不是安装包。
+此分支可构建「文库」本地 Android 阅读器，支持大 EPUB 加速导入，首页保留「本地」和「我的」。上文介绍的是上游项目功能，本分支的改动、包名及构建环境见下方构建指南。
 
 [Source checks](https://github.com/mikufoxxx/Wenku8_Flutter/actions/workflows/flutter-ci.yml) 仅检查公开文件清单与上传边界，不构建或更改发行版。
 

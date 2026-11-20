@@ -1,17 +1,34 @@
-# 源码快照与安装包
+# 文库 Android 构建
 
-使用应用请下载 [GitHub Releases](https://github.com/mikufoxxx/Wenku8_Flutter/releases/latest) 中适合设备的安装包。Android 使用签名 APK，iOS 与 HarmonyOS 的未签名包需自行签名。
+此分支提供「文库」本地 Android 阅读器。目前版本为 v1.0.0，构建号为 4，包名为 `org.mewx.wenku8_flutter.wenku_local`。独立包名允许和上游「轻小说文库」同时安装，书库与阅读记录分别保存。
 
-本仓库是部分实现的参考快照，保留了一些未提供模块的引用，不能独立构建或复现正式安装包。GitHub 自动生成的 Source code ZIP／tar.gz 是此快照的压缩文件，不是安装包。发行版功能以实际安装包及发布说明为准。
+## 代码与功能改动
 
-## 文件检查
+- `lib/book_import_limits.dart`、`lib/local_book_archive.dart` 和 EPUB 导入及读取调用点移除了单本 EPUB 的 512 MiB 文件大小限制，将 EPUB 的累计解压上限设为 2 GiB。导入阶段检查压缩包结构和所读取的条目，普通插图在读取时校验。
+- `lib/local_document_input.dart` 将关联文件改为按范围读取。大 EPUB 可以从安卓文件选择器授权后直接读取，也能按需加载插图。
+- Android 的 `BookImportQueue.kt`、`BookDocuments.kt` 和 `BookTextLinks.kt` 使用原生 SHA-256。复制模式在创建应用内副本的同一遍读取中计算指纹，导入成功后直接保存已经复制好的临时文件。关联模式对已授权的文件描述符计算相同的指纹。
+- `lib/pages.dart` 和 `lib/main.dart` 将首页导航改为「本地」和「我的」，默认显示本地书库。
+- `android/app/build.gradle.kts` 和 `pubspec.yaml` 配置应用名称、独立包名与版本。
+
+在同一台 Android 模拟器上，以约 1.25 GB 的 EPUB 测量从选中文件到导入完成的耗时。关联模式从约 36 秒降到 17 秒，复制模式从约 61 秒降到 26 秒。两种方式均导入 130 章并打开首章正文。
+
+## 本地构建
+
+验证环境使用 Flutter 3.41.9、JDK 17、Android SDK 35 和 36、NDK 28.2.13676358 及 CMake 3.22.1。
 
 ```sh
-python3 tools/check_public_source.py
+flutter pub get --enforce-lockfile
+flutter build apk --release --no-pub --target-platform android-arm,android-arm64,android-x64
 ```
 
-该检查验证公开文件清单及已识别的敏感内容，不是 Flutter 编译或运行验证。公开 CI 只执行此检查，不创建、删除或更新 Release 和安装包。
+APK 生成在 `build/app/outputs/flutter-apk/app-release.apk`。覆盖安装此分支旧版时，沿用相同的应用签名。正式构建的签名配置通过本地 `android/key.properties` 提供。
 
-## 许可
+## 公开源码与许可
 
-保留 LICENSE、NOTICE、assets/licenses/ 和第三方组件的声明。公开文件仍遵循对应许可；部分参考快照不等同于正式二进制的完整对应源码。
+Android 本地构建所需的导入、报告、听书和小组件文件来自同项目的公开快照。此分支的功能范围为本地阅读，原发行版的在线组件由上游发行版提供。[公开快照](https://github.com/Myfel1ne/Wenku8_Flutter/tree/1f54fa09f6aba16f810d47e77caa76235d519e0d)
+
+```sh
+python3 tools/check_public_source.py --revision "$(git rev-parse HEAD)"
+```
+
+公开 CI 检查提交中的公开文件清单及敏感内容。许可与署名见 `LICENSE`、`NOTICE`、`assets/licenses/` 和各第三方组件目录。

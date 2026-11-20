@@ -12,6 +12,7 @@ class BookDocumentSelection {
     this.error,
     this.originReference,
     this.originName,
+    this.stagedDigest,
   }) : token = null,
        reference = null,
        assert((path == null) != (error == null));
@@ -20,6 +21,7 @@ class BookDocumentSelection {
       reference = null,
       originReference = null,
       originName = null,
+      stagedDigest = null,
       error = null;
   const BookDocumentSelection.linked({
     required this.name,
@@ -28,10 +30,11 @@ class BookDocumentSelection {
        token = null,
        originReference = null,
        originName = null,
+       stagedDigest = null,
        error = null;
   final String name;
   final String? path, error, token, reference;
-  final String? originReference, originName;
+  final String? originReference, originName, stagedDigest;
 
   factory BookDocumentSelection.fromMap(Map<dynamic, dynamic> value) =>
       value['reference'] is String
@@ -48,6 +51,7 @@ class BookDocumentSelection {
           name: value['name'] as String,
           path: value['path'] as String?,
           error: value['error'] as String?,
+          stagedDigest: value['stagedDigest'] as String?,
         );
 }
 

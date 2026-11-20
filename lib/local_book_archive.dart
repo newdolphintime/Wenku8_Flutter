@@ -75,9 +75,9 @@ Archive readLocalBookArchive(
   var total = 0;
   for (final entry in archive) {
     total += entry.size;
+    _checkExpandedSize(total, maxSize);
     if (entry.isSymbolicLink ||
         entry.size > maxEntrySize ||
-        total > maxSize ||
         _unsupportedPath(entry.name)) {
       throw const FormatException('压缩包大小或路径不受支持');
     }
@@ -172,14 +172,20 @@ void _checkEntryLimits(
   int maxSize,
   int maxEntrySize,
 ) {
+  _checkExpandedSize(total, maxSize);
   if (header.uncompressedSize < 0 ||
       header.uncompressedSize > maxEntrySize ||
-      total > maxSize ||
       (header.externalFileAttributes >> 16) & 0xf000 == 0xa000) {
     throw const FormatException('压缩包包含不支持的文件或大小超出限制');
   }
   if (_unsupportedPath(header.filename)) {
     throw const FormatException('压缩包大小或路径不受支持');
+  }
+}
+
+void _checkExpandedSize(int total, int maxSize) {
+  if (total > maxSize) {
+    throw FormatException('压缩包展开后合计超过 ${maxSize ~/ (1024 * 1024)} MiB');
   }
 }
 

@@ -27,7 +27,6 @@ class LocalDocumentSource {
         (raw['reference'] as String).isEmpty ||
         raw['size'] is! int ||
         raw['size'] <= 0 ||
-        raw['size'] > 512 * 1024 * 1024 ||
         raw['modified'] is! int ||
         raw['digest'] is! String ||
         !RegExp(r'^[a-f0-9]{64}$').hasMatch(raw['digest'])) {
@@ -73,12 +72,15 @@ class PlatformLocalDocumentAccess
     implements LocalDocumentAccess, LocalDocumentImportAccess {
   static const _channel = MethodChannel('org.mewx.wenku8/book_documents');
   Future<Map<String, dynamic>> _open(
-    String reference, [
+    String reference, {
     LocalDocumentSource? expected,
-  ]) async => (await _channel.invokeMapMethod<String, dynamic>(
-    'openLinkedDocument',
-    {'reference': reference, if (expected != null) ...expected.toJson()},
-  ))!;
+    bool computeDigest = false,
+  }) async =>
+      (await _channel.invokeMapMethod<String, dynamic>('openLinkedDocument', {
+        'reference': reference,
+        if (expected != null) ...expected.toJson(),
+        if (computeDigest) 'computeDigest': true,
+      }))!;
   Future<void> _close(Map lease) => _channel.invokeMethod<void>(
     'closeLinkedDocument',
     {'lease': lease['lease']},
@@ -86,13 +88,16 @@ class PlatformLocalDocumentAccess
 
   @override
   Future<LocalDocumentSource> inspect(String reference) async {
-    final lease = await _open(reference);
+    final lease = await _open(reference, computeDigest: Platform.isAndroid);
     try {
-      final digest = await compute(
-        _documentDigest,
-        _input(lease),
-        debugLabel: 'local-original-identity',
-      );
+      final input = _input(lease);
+      final digest =
+          input.verifiedDigest ??
+          await compute(
+            _documentDigest,
+            input,
+            debugLabel: 'local-original-identity',
+          );
       return LocalDocumentSource.fromJson({
         ...lease,
         'reference': reference,
@@ -104,7 +109,11 @@ class PlatformLocalDocumentAccess
   }
 
   LocalDocumentInput _input(Map lease) => lease['descriptor'] is int
-      ? LocalDocumentInput.descriptor(lease['descriptor'], lease['size'])
+      ? LocalDocumentInput.descriptor(
+          lease['descriptor'],
+          lease['size'],
+          verifiedDigest: lease['digest'] as String?,
+        )
       : LocalDocumentInput.file(lease['path'] as String);
 
   @override
@@ -113,7 +122,7 @@ class PlatformLocalDocumentAccess
     Future<T> Function(LocalDocumentInput input, LocalDocumentHeader header)
     read,
   ) async {
-    final lease = await _open(reference);
+    final lease = await _open(reference, computeDigest: Platform.isAndroid);
     try {
       return await read(_input(lease), (
         reference: reference,
@@ -132,7 +141,7 @@ class PlatformLocalDocumentAccess
     LocalDocumentSource source,
     Future<T> Function(LocalDocumentInput input) read,
   ) async {
-    final lease = await _open(source.reference, source);
+    final lease = await _open(source.reference, expected: source);
     try {
       return await read(_input(lease));
     } on FileSystemException {
@@ -144,7 +153,7 @@ class PlatformLocalDocumentAccess
 
   @override
   Stream<List<int>> bytes(LocalDocumentSource source) async* {
-    final lease = await _open(source.reference, source);
+    final lease = await _open(source.reference, expected: source);
     try {
       yield* _input(lease).bytes();
     } finally {

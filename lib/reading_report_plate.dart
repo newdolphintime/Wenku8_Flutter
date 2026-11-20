@@ -480,7 +480,7 @@ abstract class _ReportPlateComposer extends _ReportComposer {
     return top +
         15 +
         plateText(
-          options.signature ? '轻小说文库 · 私人阅读报告' : '$name · ${data.today.year}',
+          options.signature ? '文库 · 私人阅读报告' : '$name · ${data.today.year}',
           x,
           top + 15,
           width: width,

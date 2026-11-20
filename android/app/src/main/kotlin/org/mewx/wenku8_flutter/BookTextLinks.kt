@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -53,9 +54,10 @@ internal class BookTextLinks(private val context: Context) {
      * Only text-index leases include a logical start offset for bounded positional reads.
      * Non-seekable providers need an explicit managed copy instead. */
     fun openDocument(reference: String, expectedSize: Long? = null, expectedModified: Long? = null,
-        purpose: String? = null): Map<String, Any> {
+        purpose: String? = null, computeDigest: Boolean = false): Map<String, Any> {
         val uri = source(reference)
         val before = modified(uri)
+        val isEpub = purpose == null && isEpubDocument(uri)
         var owner: java.io.Closeable? = null
         try {
             val fd: Int
@@ -65,7 +67,7 @@ internal class BookTextLinks(private val context: Context) {
                 val descriptor = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
                 owner = descriptor
                 val size = android.system.Os.fstat(descriptor.fileDescriptor).st_size
-                range = linkedDocumentRange(0, size, size, purpose)
+                range = linkedDocumentRange(0, size, size, purpose, isEpub)
                 fd = descriptor.fd
             } else {
                 require(uri.scheme == "content") { "原文件位置有误，请重新定位" }
@@ -74,11 +76,13 @@ internal class BookTextLinks(private val context: Context) {
                 owner = descriptor
                 range = linkedDocumentRange(descriptor.startOffset, descriptor.declaredLength,
                     if (descriptor.declaredLength >= 0) 0L else android.system.Os.fstat(descriptor.fileDescriptor).st_size,
-                    purpose)
+                    purpose, isEpub)
                 android.system.Os.lseek(descriptor.fileDescriptor, range.offset, android.system.OsConstants.SEEK_SET)
                 fd = descriptor.parcelFileDescriptor.fd
             }
             val size = range.size
+            require(!computeDigest || range.offset == 0L) { "原文件位置有误，请重新定位" }
+            val digest = if (computeDigest) BookDocumentInput(fd, size).sha256() else null
             check((expectedSize == null || size == expectedSize) &&
                 (expectedModified == null || before == expectedModified) && modified(uri) == before) {
                 "原文件已变化，请重新定位原文件"
@@ -90,6 +94,7 @@ internal class BookTextLinks(private val context: Context) {
             }
             val response = mutableMapOf<String, Any>("lease" to key, "size" to size, "modified" to before, "descriptor" to fd)
             if (purpose == "text-index") response["offset"] = range.offset
+            if (digest != null) response["digest"] = digest
             return response
         } catch (failure: android.system.ErrnoException) {
             if (failure.errno == android.system.OsConstants.ESPIPE)
@@ -105,6 +110,20 @@ internal class BookTextLinks(private val context: Context) {
     fun close() {
         val leases = synchronized(opened) { closed = true; opened.values.toList().also { opened.clear() } }
         leases.forEach { runCatching { it.close() } }
+    }
+
+    private fun isEpubDocument(uri: Uri): Boolean {
+        if (uri.scheme == "file") return uri.path.orEmpty().endsWith(".epub", ignoreCase = true)
+        if (uri.scheme != "content") return false
+        val resolver = context.contentResolver
+        val type = runCatching { resolver.getType(uri) }.getOrNull()
+        if (type?.substringBefore(';')?.trim().equals("application/epub+zip", ignoreCase = true)) return true
+        val name = runCatching {
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                if (it.moveToFirst()) it.getString(0) else null
+            }
+        }.getOrNull()
+        return name.orEmpty().endsWith(".epub", ignoreCase = true)
     }
 
     private fun modified(uri: Uri): Long = if (uri.scheme == "file") File(uri.path!!).lastModified()
@@ -162,15 +181,16 @@ internal data class LinkedDocumentRange(val offset: Long, val size: Long)
 
 /** Text indexing uses bounded positional reads; archive callers still require a whole-file descriptor. */
 internal fun linkedDocumentRange(startOffset: Long, declaredLength: Long, descriptorSize: Long,
-    purpose: String? = null): LinkedDocumentRange {
+    purpose: String? = null, isEpub: Boolean = false): LinkedDocumentRange {
     require(purpose == null || purpose == "text-index") { "原文件读取用途无效" }
     require(purpose == "text-index" || startOffset == 0L) { "这个文件提供方不支持原位读取，请选择「复制到应用」" }
     require(startOffset >= 0) { "原文件位置有误，请重新定位" }
     val size = if (declaredLength >= 0) declaredLength else {
-        require(descriptorSize >= startOffset) { "原文件为空或超过 512 MiB" }
+        require(descriptorSize >= startOffset) { "原文件位置有误，请重新定位" }
         descriptorSize - startOffset
     }
-    require(size in 1..BookArchiveImport.MAX_ARCHIVE) { "原文件为空或超过 512 MiB" }
+    require(size > 0) { "原文件为空，请重新下载原书" }
+    require(isEpub || size <= BookArchiveImport.MAX_ARCHIVE) { "原文件超过 512 MiB" }
     require(startOffset <= Long.MAX_VALUE - size) { "原文件位置有误，请重新定位" }
     return LinkedDocumentRange(startOffset, size)
 }

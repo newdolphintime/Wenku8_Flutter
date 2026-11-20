@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
 
+import 'book_import_limits.dart';
 import 'local_book_archive.dart';
 import 'local_document_input.dart';
 
@@ -81,9 +82,12 @@ Map<String, LocalBookImageResult> readLocalEpubImagesFromInput(
     final archive = value['recoverDamagedEpub'] == true
         ? readLocalBookArchiveForRecovery(
             buffer.stream,
-            maxSize: 1024 * 1024 * 1024,
+            maxSize: maxExpandedLocalEpubBytes,
           ).archive
-        : readLocalBookArchive(buffer.stream, maxSize: 1024 * 1024 * 1024);
+        : readLocalBookArchive(
+            buffer.stream,
+            maxSize: maxExpandedLocalEpubBytes,
+          );
     for (final entry in paths.entries) {
       final name = entry.key, path = entry.value;
       try {

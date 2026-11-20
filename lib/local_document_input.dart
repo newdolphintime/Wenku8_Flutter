@@ -1,79 +1,69 @@
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
 
 /// A leased native descriptor is already authorized. Reopening /proc/self/fd
 /// is not equivalent on Android's scoped-storage FUSE provider, and Darwin
-/// does not expose that path. Map the live, read-only descriptor instead; no
-/// original or expanded archive is staged.
+/// does not expose that path. Read bounded ranges from the live descriptor
+/// without staging another copy of the original.
 class LocalDocumentInput {
   const LocalDocumentInput.file(this.path)
     : descriptor = null,
       size = null,
-      offset = 0;
+      offset = 0,
+      verifiedDigest = null;
   const LocalDocumentInput.descriptor(
     this.descriptor,
     this.size, {
     this.offset = 0,
+    this.verifiedDigest,
   }) : path = null;
-  final String? path;
+  final String? path, verifiedDigest;
   final int? descriptor, size;
   final int offset;
   int get length => size ?? File(path!).lengthSync();
 
   LocalDocumentBuffer open() {
     if (offset != 0) throw const FormatException('这份输入范围需要使用有界读取');
-    return path != null
-        ? LocalDocumentBuffer._(InputFileStream(path!), null, 0)
-        : LocalDocumentBuffer._mapped(descriptor!, size!);
+    if (path case final filePath?) {
+      return LocalDocumentBuffer._(InputFileStream(filePath));
+    }
+    final handle = _DescriptorFileHandle(openReadBuffer());
+    try {
+      return LocalDocumentBuffer._(InputFileStream.withFileHandle(handle));
+    } catch (_) {
+      handle.closeSync();
+      rethrow;
+    }
   }
 
-  /// Uses owned bounded bytes rather than a mapping. External TXT editors can
-  /// truncate an open original without exposing a stale mmap page to the VM.
+  /// Uses bounded positional reads so a truncated original reports a read
+  /// error without touching stale memory-mapped pages.
   LocalDocumentReadBuffer openReadBuffer() =>
       LocalDocumentReadBuffer._open(this);
 
   Stream<List<int>> bytes() async* {
-    if (offset != 0) {
-      final reader = openReadBuffer();
-      try {
-        for (var at = 0; at < length;) {
-          final count = (length - at).clamp(
-            0,
-            LocalDocumentReadBuffer.maxReadBytes,
-          );
-          final chunk = reader.read(at, count);
-          at += chunk.length;
-          yield chunk;
-        }
-      } finally {
-        reader.close();
-      }
-      return;
-    }
-    if (path != null) {
+    if (path != null && offset == 0) {
       yield* File(path!).openRead();
       return;
     }
-    final buffer = open();
+    final reader = openReadBuffer();
     try {
-      while (!buffer.stream.isEOS) {
-        // Owned chunks outlive the mapping when stream consumers retain them.
-        yield Uint8List.fromList(
-          buffer.stream.readBytes(64 * 1024).toUint8List(),
+      for (var at = 0; at < reader.length;) {
+        final count = math.min(
+          reader.length - at,
+          LocalDocumentReadBuffer.maxReadBytes,
         );
+        yield reader.read(at, count);
+        at += count;
       }
     } finally {
-      buffer.close();
+      reader.close();
     }
   }
 }
-
-/// Both entry points take a 64-bit file offset. Darwin exposes it as `off_t`
-/// on mmap; Android needs mmap64's `off64_t`, including on 32-bit devices.
-String localDocumentMmapSymbol(String operatingSystem) =>
-    operatingSystem == 'ios' || operatingSystem == 'macos' ? 'mmap' : 'mmap64';
 
 /// The raw reader retains a 64-bit offset on 32-bit Android as well.
 String localDocumentPreadSymbol(String operatingSystem) =>
@@ -142,31 +132,36 @@ class LocalDocumentReadBuffer {
   /// Reads an exact logical range without changing the leased descriptor's
   /// position. The returned bytes no longer depend on the original's lifetime.
   Uint8List read(int offset, int count) {
+    if (count < 0 || count > maxReadBytes) {
+      throw RangeError('原文件读取范围无效');
+    }
+    final bytes = Uint8List(count);
+    _readInto(offset, bytes, 0, count);
+    return bytes;
+  }
+
+  void _readInto(int offset, Uint8List target, int start, int count) {
     if (_closed) throw StateError('原文件读取已结束');
-    if (offset < 0 ||
-        count < 0 ||
-        count > maxReadBytes ||
-        offset + count > length) {
+    if (offset < 0 || count > length - offset) {
       throw RangeError('原文件读取范围无效');
     }
     final file = _file;
+    var done = 0;
     if (file != null) {
       file.setPositionSync(_input.offset + offset);
-      final bytes = Uint8List(count);
-      var done = 0;
       while (done < count) {
-        final read = file.readIntoSync(bytes, done, count);
+        final read = file.readIntoSync(target, start + done, start + count);
         if (read == 0) throw const FormatException('原文件已变化，请重新选择');
         done += read;
       }
-      return bytes;
+      return;
     }
     final errno = _errno;
-    var done = 0;
+    final memory = _memory!;
     while (done < count) {
       final read = _pread(
         _input.descriptor!,
-        (_memory! + done).cast<Void>(),
+        (memory + done).cast<Void>(),
         count - done,
         _input.offset + offset + done,
       );
@@ -178,7 +173,9 @@ class LocalDocumentReadBuffer {
       if (read == 0) throw const FormatException('原文件已变化，请重新选择');
       done += read;
     }
-    return Uint8List.fromList(_memory!.asTypedList(count));
+    if (count > 0) {
+      target.setRange(start, start + count, memory.asTypedList(count));
+    }
   }
 
   /// Releases only owned scratch storage/file handles, never the native lease.
@@ -193,57 +190,59 @@ class LocalDocumentReadBuffer {
   }
 }
 
-typedef _MmapNative =
-    Pointer<Void> Function(Pointer<Void>, UintPtr, Int32, Int32, Int32, Int64);
-typedef _Mmap = Pointer<Void> Function(Pointer<Void>, int, int, int, int, int);
-typedef _MunmapNative = Int32 Function(Pointer<Void>, UintPtr);
-typedef _Munmap = int Function(Pointer<Void>, int);
+/// Gives the archive decoder buffered random access while leaving ownership
+/// of the underlying Android or iOS document lease with the platform.
+class _DescriptorFileHandle extends AbstractFileHandle {
+  _DescriptorFileHandle(this._reader);
+
+  final LocalDocumentReadBuffer _reader;
+  @override
+  int position = 0;
+  @override
+  int get length => _reader.length;
+  @override
+  bool get isOpen => !_reader._closed;
+
+  @override
+  bool open({FileAccess mode = FileAccess.read}) =>
+      isOpen && mode == FileAccess.read;
+
+  @override
+  int readInto(Uint8List buffer, [int? size]) {
+    final count = math.min(size ?? buffer.length, length - position);
+    var done = 0;
+    while (done < count) {
+      final chunk = math.min(
+        count - done,
+        LocalDocumentReadBuffer.maxReadBytes,
+      );
+      _reader._readInto(position, buffer, done, chunk);
+      position += chunk;
+      done += chunk;
+    }
+    return done;
+  }
+
+  @override
+  void writeFromSync(List<int> buffer, [int start = 0, int? end]) =>
+      throw UnsupportedError('原文件为只读');
+
+  @override
+  Future<void> close() async => closeSync();
+
+  @override
+  void closeSync() => _reader.close();
+}
 
 class LocalDocumentBuffer {
-  LocalDocumentBuffer._(this.stream, this._mapping, this._size);
-  factory LocalDocumentBuffer._mapped(int fd, int size) {
-    if (size < 0) {
-      throw const FormatException('原文件大小无效，请重新选择原文件');
-    }
-    if (size == 0) {
-      return LocalDocumentBuffer._(InputMemoryStream(Uint8List(0)), null, 0);
-    }
-    // PROT_READ with MAP_PRIVATE: never make the leased original writable.
-    final pointer = _mmap(nullptr, size, 1, 2, fd, 0);
-    if (pointer.address == -1 ||
-        pointer.address == 0xffffffffffffffff ||
-        pointer.address == 0xffffffff ||
-        pointer.address == 0) {
-      throw const FormatException('无法直接读取这份原文件，请选择「复制到应用」');
-    }
-    try {
-      return LocalDocumentBuffer._(
-        InputMemoryStream(pointer.cast<Uint8>().asTypedList(size)),
-        pointer,
-        size,
-      );
-    } catch (_) {
-      _munmap(pointer, size);
-      rethrow;
-    }
-  }
-  static final _mmap = DynamicLibrary.process()
-      .lookupFunction<_MmapNative, _Mmap>(
-        localDocumentMmapSymbol(Platform.operatingSystem),
-      );
-  static final _munmap = DynamicLibrary.process()
-      .lookupFunction<_MunmapNative, _Munmap>('munmap');
+  LocalDocumentBuffer._(this.stream);
+
   final InputStream stream;
-  final Pointer<Void>? _mapping;
-  final int _size;
   bool _closed = false;
+
   void close() {
     if (_closed) return;
     _closed = true;
-    try {
-      stream.closeSync();
-    } finally {
-      if (_mapping != null) _munmap(_mapping, _size);
-    }
+    stream.closeSync();
   }
 }
