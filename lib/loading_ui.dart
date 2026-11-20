@@ -130,7 +130,7 @@ class _SkeletonPainter extends CustomPainter {
     }
 
     if (layout == SkeletonLayout.bookRow) {
-      block(0, 13, 56, 76, ArchiveDesign.coverRadius);
+      block(0, 13, 56, 76, 0);
       block(71, 20, 65, 7);
       block(71, 35, (size.width - 93) * .87, 15);
       block(71, 64, (size.width - 93) * .55, 10);
@@ -169,7 +169,7 @@ class _SkeletonPainter extends CustomPainter {
     }
     if (layout == SkeletonLayout.cover) {
       final inset = size.width * .12;
-      block(inset, inset, size.width - inset * 2, size.height * .52);
+      block(inset, inset, size.width - inset * 2, size.height * .52, 0);
       block(inset, size.height * .74, size.width * .64, 5);
       block(inset, size.height * .83, size.width * .43, 4);
       return;
@@ -275,7 +275,7 @@ class _SkeletonPainter extends CustomPainter {
     for (var i = 0; i < 6 && y < size.height - 74; i++) {
       for (var column = 0; column < columns; column++) {
         final x = left + column * (cell + BookCollectionLayout.gap);
-        block(x, y, 56, 76, ArchiveDesign.coverRadius);
+        block(x, y, 56, 76, 0);
         block(x + 71, y + 7, 65, 7);
         block(x + 71, y + 22, (cell - 93) * .87, 15);
         block(x + 71, y + 51, (cell - 93) * .55, 10);

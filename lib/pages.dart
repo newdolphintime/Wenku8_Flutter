@@ -102,6 +102,7 @@ import 'reader_embedded_vertical.dart';
 import 'lan_reading_sync.dart';
 import 'lan_reading_page.dart';
 import 'reader_pagination.dart';
+import 'reader_book_layout.dart';
 import 'reader_paged_view.dart';
 import 'reader_vertical_text.dart';
 import 'reader_reflow.dart';
@@ -129,11 +130,7 @@ import 'review_pages.dart';
 export 'app_ui.dart' show sectionHeader;
 
 class HomeShell extends StatefulWidget {
-  const HomeShell({
-    super.key,
-    required this.state,
-    required this.repository,
-  });
+  const HomeShell({super.key, required this.state, required this.repository});
   final LibraryState state;
   final NovelRepository repository;
 
@@ -230,20 +227,14 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
             showHeader: false,
             compactMainPageControls: true,
             onSearch: _openSearch,
-            onOpen: (page, book) => openDetail(
-              page,
-              book,
-              widget.state,
-              widget.repository,
-              entry: ReadingEntry.local,
-            ),
+            onOpen: (page, book) =>
+                openDetail(page, book, widget.state, widget.repository),
             onOpenWithCover: (page, book, tag) => openDetail(
               page,
               book,
               widget.state,
               widget.repository,
               coverHeroTag: tag,
-              entry: ReadingEntry.local,
             ),
           );
     _headers = [
@@ -252,10 +243,8 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
       settings.buildHeader,
     ];
     _pageWidgets =
-        [
-              localPage ?? const Center(child: AppText('当前演示数据源未启用本地书库')),
-              settings,
-            ].indexed
+        [localPage ?? const Center(child: AppText('当前演示数据源未启用本地书库')), settings]
+            .indexed
             .map(
               (entry) => PrimaryScrollController(
                 controller: _tabScrolls[entry.$1],
@@ -272,13 +261,9 @@ class HomeShellState extends State<HomeShell> with TickerProviderStateMixin {
     // Returning must not resume an old request to open the keyboard.
     if (current == false) {
       _searchFocusPending = false;
-    } else if (current == true &&
-        _routeCurrent == false &&
-        _searchOpen) {
+    } else if (current == true && _routeCurrent == false && _searchOpen) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted &&
-            _searchOpen &&
-            _routeCurrent == true) {
+        if (mounted && _searchOpen && _routeCurrent == true) {
           _localSearch.refresh();
         }
       });
@@ -1403,25 +1388,7 @@ void openDetail(
   NovelRepository repository, {
   Object? coverHeroTag,
   bool fromCache = false,
-  bool forceDetails = false,
-  ReadingEntry entry = ReadingEntry.discovery,
 }) {
-  if (state.directReadingOn(entry) && !forceDetails) {
-    unawaited(
-      pushNovelPage<void>(
-        context,
-        ReaderLoaderPage(
-          novel: novel,
-          state: state,
-          repository: repository,
-          fromCache: fromCache,
-        ),
-        reduceMotion: state.reduceMotion,
-        slot: ('reader-entry', novel.id),
-      ),
-    );
-    return;
-  }
   if (LibraryWorkspace.open(
     context,
     novel.id,
@@ -1750,20 +1717,14 @@ class ShelfPage extends StatefulWidget {
                     LocalLibraryPage(
                       books: local,
                       state: state,
-                      onOpen: (page, book) => openDetail(
-                        page,
-                        book,
-                        state,
-                        repository,
-                        entry: ReadingEntry.local,
-                      ),
+                      onOpen: (page, book) =>
+                          openDetail(page, book, state, repository),
                       onOpenWithCover: (page, book, tag) => openDetail(
                         page,
                         book,
                         state,
                         repository,
                         coverHeroTag: tag,
-                        entry: ReadingEntry.local,
                       ),
                     ),
                     reduceMotion: state.reduceMotion,
@@ -1999,7 +1960,6 @@ class _ShelfPageState extends State<ShelfPage>
       )),
       books: books,
       library: state,
-      entry: ReadingEntry.shelf,
       reduceMotion: state.reduceMotion,
       animateEntrance: true,
       repeatFill: state.shelfPreferences.repeatFill,
@@ -2012,7 +1972,6 @@ class _ShelfPageState extends State<ShelfPage>
         state,
         widget.repository,
         coverHeroTag: tag,
-        entry: ReadingEntry.shelf,
       ),
     );
     final known = [for (final id in ids) ?_known(id)];
@@ -2556,7 +2515,6 @@ class _ShelfPageState extends State<ShelfPage>
       widget.repository,
       coverHeroTag: CoverHeroTag(this, book.id),
       fromCache: _cacheOnly,
-      entry: ReadingEntry.shelf,
     ),
     trailing: GlassMenuAnchor(
       child: Builder(
@@ -2585,7 +2543,6 @@ class _ShelfPageState extends State<ShelfPage>
       widget.repository,
       coverHeroTag: CoverHeroTag(this, book.id),
       fromCache: _cacheOnly,
-      entry: ReadingEntry.shelf,
     ),
     trailing: SizedBox(
       width: 74,
@@ -2836,16 +2793,9 @@ Future<void> openLocalLibrary(
   LocalLibraryPage(
     books: books,
     state: state,
-    onOpen: (page, novel) =>
-        openDetail(page, novel, state, repository, entry: ReadingEntry.local),
-    onOpenWithCover: (page, novel, tag) => openDetail(
-      page,
-      novel,
-      state,
-      repository,
-      coverHeroTag: tag,
-      entry: ReadingEntry.local,
-    ),
+    onOpen: (page, novel) => openDetail(page, novel, state, repository),
+    onOpenWithCover: (page, novel, tag) =>
+        openDetail(page, novel, state, repository, coverHeroTag: tag),
   ),
   reduceMotion: state.reduceMotion,
 );
@@ -3009,18 +2959,6 @@ class SettingsPage extends StatelessWidget {
             description: '仅本 App 固定竖屏，关闭后跟随系统',
             value: state.forcePortrait,
             onChanged: state.setForcePortrait,
-          ),
-          const Divider(height: 22),
-          _toggleSetting(
-            context,
-            keyName: 'settings-direct-reading',
-            icon: CupertinoIcons.book_fill,
-            title: '点书直接阅读',
-            description: '在本地书库点书后从上次位置继续',
-            value: state.directReadingOn(ReadingEntry.local),
-            onChanged: (value) => state.setDirectReadingPages(
-              value ? {ReadingEntry.local} : {},
-            ),
           ),
           const Divider(height: 22),
           _toggleSetting(
@@ -5574,6 +5512,11 @@ class _ReaderPageState extends State<ReaderPage>
   final _verticalGlyphs = ReaderGlyphCache();
   final _selection = ReaderSelectionController();
   final _contentTapSurface = ReaderTapSurfaceController();
+  bool _tabletSpread = false;
+  ReaderMode get _effectiveMode =>
+      _tabletSpread && _readerPreferences.mode == ReaderMode.scroll
+      ? ReaderMode.paged
+      : _readerPreferences.mode;
   late ReaderMode _readerMode;
   late bool _chapterEntrance;
   bool get _paginated => _readerMode.paginated;
@@ -5919,7 +5862,7 @@ class _ReaderPageState extends State<ReaderPage>
     final paper = _readerPreferences.paper;
     // Typography previews rebuild the article, not the glass controls. Only a
     // different paper palette needs to update the chrome's contrast.
-    final mode = _readerPreferences.mode;
+    final mode = _effectiveMode;
     final hideSystemStatus = _readerPreferences.hideSystemStatus;
     final showStatusInfo = _readerPreferences.showStatusInfo;
     final chapterEntrance = _readerPreferences.chapterEntrance;
@@ -6264,6 +6207,13 @@ class _ReaderPageState extends State<ReaderPage>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final landscape = ReaderBookLayout.landscapeTablet(
+      MediaQuery.sizeOf(context),
+    );
+    if (_tabletSpread != landscape) {
+      _tabletSpread = landscape;
+      _paperChanged();
+    }
     _activityRouteCurrent = ModalRoute.isCurrentOf(context) != false;
     _syncReadingActivity();
     _releaseFeedbackHeader ??= bindNovelFeedbackHeader(context, _chrome);
@@ -8592,17 +8542,20 @@ class _ReaderPageState extends State<ReaderPage>
         ranges,
         chapterOrder: order,
       );
-      final existing = widget.state.bookmarksFor(widget.novel.id).where(
-        (mark) =>
-            mark.isUnderline &&
-            listEquals(
-              canonicalReaderUnderlineRanges(
-                mark.underlineRanges,
-                chapterOrder: order,
-              ),
-              selectedRanges,
-            ),
-      ).firstOrNull;
+      final existing = widget.state
+          .bookmarksFor(widget.novel.id)
+          .where(
+            (mark) =>
+                mark.isUnderline &&
+                listEquals(
+                  canonicalReaderUnderlineRanges(
+                    mark.underlineRanges,
+                    chapterOrder: order,
+                  ),
+                  selectedRanges,
+                ),
+          )
+          .firstOrNull;
       await widget.state.saveAnnotation(
         novel: _sourceBook,
         position: position,
@@ -10357,7 +10310,10 @@ class _ReaderPageState extends State<ReaderPage>
         FutureBuilder<({ReaderContent? content, Object? error})>(
           future: _content,
           builder: (context, snapshot) {
-            final prefs = _readerPreferences;
+            final saved = _readerPreferences;
+            final prefs = saved.mode == _readerMode
+                ? saved
+                : saved.copyWith(mode: _readerMode);
             final chapterIndex = _chapter, sourceBook = _sourceBook;
             String pageTitle(int index, ReaderTextAnchor anchor) =>
                 sourceBook.readingTitleFor(
@@ -10421,13 +10377,20 @@ class _ReaderPageState extends State<ReaderPage>
             // Fixed information rows keep their home-indicator clearance in
             // both chrome states; showing controls never changes this geometry.
             final pagedBottomInset = safe.bottom;
+            final outerMargin = _tabletSpread
+                ? (MediaQuery.sizeOf(context).width * .045).clamp(28.0, 60.0)
+                : 0.0;
+            final runningHead = _tabletSpread
+                ? MediaQuery.textScalerOf(context).scale(13) * 1.4 + 14
+                : 0.0;
             final pagedPadding = EdgeInsets.fromLTRB(
-              prefs.leftMargin + safe.left,
+              math.max(outerMargin, prefs.leftMargin) + safe.left,
               (prefs.hideSystemStatus
                       ? _systemStatusExtent(context)
                       : safe.top) +
-                  prefs.marginTop,
-              prefs.rightMargin + safe.right,
+                  prefs.marginTop +
+                  runningHead,
+              math.max(outerMargin, prefs.rightMargin) + safe.right,
               pagedBottomInset +
                   prefs.marginBottom +
                   ReaderScrollLocation.extentOf(context),

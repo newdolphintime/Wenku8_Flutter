@@ -7,13 +7,12 @@ import 'package:flutter/semantics.dart';
 /// One pagination width for both leaves, including off-centre hardware hinges.
 /// Rectangles are viewport-local; reading order is applied by ReaderBookSpread.
 class ReaderBookLayout {
-  const ReaderBookLayout._(this.viewport, this.pages, this.spine);
+  const ReaderBookLayout._(this.viewport, this.pages);
   final Size viewport;
   final List<Rect> pages;
-  final Rect? spine;
   int get count => pages.length;
   Size get pageSize => pages.first.size;
-  Object get key => (viewport, pages.first, pages.last, count, spine);
+  Object get key => (viewport, pages.first, pages.last, count);
 
   /// Paper reaches the screen edges while pagination keeps its text rectangle.
   Rect frameFor(int index, EdgeInsets insets) {
@@ -26,9 +25,13 @@ class ReaderBookLayout {
     );
   }
 
+  static bool landscapeTablet(Size window) =>
+      window.width > window.height && window.shortestSide >= 600;
+
   factory ReaderBookLayout.resolve({
     required Size viewport,
     required double margin,
+    required Size window,
     List<DisplayFeature> features = const [],
     Offset origin = Offset.zero,
   }) {
@@ -74,7 +77,10 @@ class ReaderBookLayout {
               );
       }
     }
-    final gutter = math.max(40.0, margin * 2);
+    final gutter = math.max(
+      (window.width * .065).clamp(40.0, 80.0),
+      margin * 2,
+    );
     final leftEnd = hinge == null
         ? area.center.dx - gutter / 2
         : hinge.left - margin;
@@ -82,24 +88,20 @@ class ReaderBookLayout {
         ? area.center.dx + gutter / 2
         : hinge.right + margin;
     final width = math.min(leftEnd - area.left, area.right - rightStart);
-    if (area.width + margin * 2 >= 720 && area.height >= 220 && width >= 300) {
-      return ReaderBookLayout._(
-        viewport,
-        [
-          Rect.fromLTWH(leftEnd - width, area.top, width, area.height),
-          Rect.fromLTWH(rightStart, area.top, width, area.height),
-        ],
-        hinge == null
-            ? Rect.fromLTWH(area.center.dx - 12, area.top, 24, area.height)
-            : null,
-      );
+    if ((hinge != null || landscapeTablet(window)) &&
+        area.height >= 220 &&
+        width >= 260) {
+      return ReaderBookLayout._(viewport, [
+        Rect.fromLTWH(leftEnd - width, area.top, width, area.height),
+        Rect.fromLTWH(rightStart, area.top, width, area.height),
+      ]);
     }
     if (hinge != null) {
       area = leftEnd - area.left >= area.right - rightStart
           ? Rect.fromLTRB(area.left, area.top, leftEnd, area.bottom)
           : Rect.fromLTRB(rightStart, area.top, area.right, area.bottom);
     }
-    return ReaderBookLayout._(viewport, [area], null);
+    return ReaderBookLayout._(viewport, [area]);
   }
 }
 
@@ -126,32 +128,6 @@ class ReaderBookSpread extends StatelessWidget {
   Widget build(BuildContext context) => Stack(
     clipBehavior: Clip.none,
     children: [
-      if (layout.spine case final spine?)
-        Positioned.fromRect(
-          rect: frameInsets == null
-              ? spine
-              : Rect.fromLTWH(
-                  spine.left + frameInsets!.left,
-                  0,
-                  spine.width,
-                  layout.viewport.height + frameInsets!.vertical,
-                ),
-          child: IgnorePointer(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [
-                    Colors.transparent,
-                    Theme.of(
-                      context,
-                    ).colorScheme.onSurface.withValues(alpha: .045),
-                    Colors.transparent,
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
       for (var index = 0; index < pages.length; index++)
         Positioned.fromRect(
           rect: frameInsets == null

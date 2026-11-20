@@ -246,6 +246,7 @@ class ReaderPageSkeleton extends StatelessWidget {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final layout = ReaderBookLayout.resolve(
+                window: MediaQuery.sizeOf(context),
                 viewport: constraints.biggest,
                 margin: margin,
                 features: MediaQuery.displayFeaturesOf(context),
@@ -475,6 +476,7 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
 
   ReaderBookLayout _layoutFor(Size frame, String title) =>
       ReaderBookLayout.resolve(
+        window: MediaQuery.sizeOf(context),
         viewport: Size(
           (frame.width - widget.padding.horizontal).clamp(1, double.infinity),
           (frame.height - widget.padding.vertical - _headingExtentFor(title))
@@ -1526,6 +1528,48 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
           .controlForeground(Theme.of(context).brightness == Brightness.dark)
           .withValues(alpha: .72),
     );
+    Iterable<Widget> leafLabels(int slot) sync* {
+      final layout = adjacent?.bookLayout ?? _bookLayout!;
+      final rtl =
+          (_publishedMode ?? widget.preferences.mode) == ReaderMode.vertical;
+      final rect = layout.pages[rtl ? perSpread - 1 - slot : slot];
+      final index = rawFirst + slot;
+      final anchor = pagination.pages[index].anchor;
+      final heading = slot == 0
+          ? widget.bookTitle!
+          : (adjacent?.chapter.titleForAnchor ?? _publishedTitleForAnchor)
+                    ?.call(anchor) ??
+                title;
+      final height = MediaQuery.textScalerOf(context).scale(13) * 1.4;
+      Widget label(String text) => part(
+        information(
+          Center(
+            child: AppText(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: informationStyle,
+            ),
+          ),
+        ),
+      );
+      yield Positioned(
+        left: padding.left + rect.left,
+        width: rect.width,
+        top: padding.top - height - 7,
+        child: label(heading),
+      );
+      if (widget.showPageCount) {
+        yield Positioned(
+          left: padding.left + rect.left,
+          width: rect.width,
+          bottom: (padding.bottom - ReaderScrollLocation.extentOf(context))
+              .clamp(0.0, double.infinity),
+          child: label('${index + 1}'),
+        );
+      }
+    }
+
     final statusInsets =
         widget.bookTitle != null && widget.preferences.hideSystemStatus
         ? ReaderStatusFooter.horizontalInsetsFor(
@@ -1611,7 +1655,16 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
                   ),
                 ),
               ),
-            if (widget.bookTitle != null)
+            if (widget.bookTitle != null &&
+                perSpread == 2 &&
+                ReaderBookLayout.landscapeTablet(
+                  MediaQuery.sizeOf(context),
+                )) ...[
+              for (var slot = 0; slot < perSpread; slot++)
+                if (rawFirst + slot >= 0 &&
+                    rawFirst + slot < pagination.pages.length)
+                  ...leafLabels(slot),
+            ] else if (widget.bookTitle != null)
               Positioned(
                 left: padding.left,
                 right: padding.right,

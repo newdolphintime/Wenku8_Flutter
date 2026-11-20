@@ -971,7 +971,6 @@ class _LocalLibraryPageState extends State<LocalLibraryPage>
                               .toList(),
                           repeatFill: organization.shelfPreferences.repeatFill,
                           library: widget.state,
-                          entry: ReadingEntry.local,
                           reduceMotion: widget.state.reduceMotion,
                           animateEntrance: true,
                           onOpen: _open,

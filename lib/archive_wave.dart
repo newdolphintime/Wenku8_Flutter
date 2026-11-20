@@ -30,7 +30,6 @@ class ArchiveFileCarousel extends StatefulWidget {
     this.animateEntrance = false,
     this.sourceLabel,
     this.library,
-    this.entry = ReadingEntry.discovery,
     this.repeatFill = true,
     this.showChrome = true,
     this.initialIndex = 0,
@@ -41,7 +40,6 @@ class ArchiveFileCarousel extends StatefulWidget {
   final bool animateEntrance;
   final String? Function(Novel)? sourceLabel;
   final LibraryState? library;
-  final ReadingEntry entry;
   final bool repeatFill;
 
   /// Keeps the physical bank while omitting its browsing labels and actions.
@@ -472,7 +470,6 @@ class _ArchiveFileCarouselState extends State<ArchiveFileCarousel>
         final book = widget.books[index % widget.books.length];
         final library = widget.library;
         final read = library?.hasRead(book.id) == true;
-        final direct = library?.directReadingOn(widget.entry) == true;
         final chapter = library?.chapterForNovel(book) ?? 0;
         final count = book.chapters.isEmpty
             ? book.chapterCount
@@ -618,10 +615,8 @@ class _ArchiveFileCarouselState extends State<ArchiveFileCarousel>
                 alignment: Alignment.centerLeft,
                 child: GlassPillButton(
                   key: const ValueKey('archive-shelf-wide-open'),
-                  icon: direct
-                      ? CupertinoIcons.play_fill
-                      : CupertinoIcons.arrow_up_right,
-                  label: direct ? (read ? '继续阅读' : '开始阅读') : '查看详情',
+                  icon: CupertinoIcons.arrow_up_right,
+                  label: '查看详情',
                   onPressed: () => _open(_pose.focus.round()),
                 ),
               ),

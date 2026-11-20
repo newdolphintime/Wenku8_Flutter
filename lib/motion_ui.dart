@@ -432,7 +432,6 @@ class PaperCoverRender extends RenderProxyBox {
   PaperCoverBend config;
   ui.ImageShader? _shader;
   ui.Image? _shaderImage;
-  List<double> _rows = const [];
   Float32List _positions = Float32List(0);
   Float32List _texture = Float32List(0);
   Uint16List _indices = Uint16List(0);
@@ -485,7 +484,6 @@ class PaperCoverRender extends RenderProxyBox {
       if (attached) config.animation?.removeListener(markNeedsPaint);
       if (attached) value.animation?.addListener(markNeedsPaint);
     }
-    if (config.faceSize != value.faceSize) _rows = const [];
     config = value;
     markNeedsPaint();
   }
@@ -519,22 +517,14 @@ class PaperCoverRender extends RenderProxyBox {
       _paint.shader = _shader;
     }
     final face = config.faceSize;
-    final radiusY = (8 / face.height).clamp(0.0, .5);
-    final radiusX = (8 / face.width).clamp(0.0, .5);
-    if (_rows.isEmpty) {
-      final rows = <double>{for (var i = 0; i <= 32; i++) i / 32};
-      for (var i = 1; i <= 8; i++) {
-        final v = radiusY * (1 - math.cos(i / 8 * math.pi / 2));
-        rows.add(v);
-        rows.add(1 - v);
-      }
-      _rows = rows.toList()..sort();
-      const columns = 17;
-      _positions = Float32List(_rows.length * columns * 2);
+    const rows = 33;
+    const columns = 17;
+    if (_positions.isEmpty) {
+      _positions = Float32List(rows * columns * 2);
       _texture = Float32List(_positions.length);
-      _indices = Uint16List((_rows.length - 1) * (columns - 1) * 6);
+      _indices = Uint16List((rows - 1) * (columns - 1) * 6);
       var triangle = 0;
-      for (var row = 0; row < _rows.length - 1; row++) {
+      for (var row = 0; row < rows - 1; row++) {
         for (var column = 0; column < columns - 1; column++) {
           final topLeft = row * columns + column;
           final bottomLeft = topLeft + columns;
@@ -566,16 +556,10 @@ class PaperCoverRender extends RenderProxyBox {
             Offset.zero & input,
           );
     final plane = debugPlane;
-    for (var index = 0; index < _rows.length; index++) {
-      final v = _rows[index];
-      final corner = math.min(v, 1 - v) / radiusY;
-      final inset = corner >= 1
-          ? 0.0
-          : radiusX *
-                (1 - math.sqrt(math.max(0, 1 - (1 - corner) * (1 - corner))));
-      const columns = 17;
+    for (var index = 0; index < rows; index++) {
+      final v = index / (rows - 1);
       for (var column = 0; column < columns; column++) {
-        final u = inset + (1 - 2 * inset) * column / (columns - 1);
+        final u = column / (columns - 1);
         final scale = 300 / (300 - pose.depthAt(v, column: u));
         final base = (index * columns + column) * 2;
         final projected = plane.point(

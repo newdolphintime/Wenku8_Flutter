@@ -1621,7 +1621,7 @@ class NovelCover extends StatelessWidget {
     );
   }
 
-  Widget _visual({bool clip = true, bool recordArrival = true}) {
+  Widget _visual({bool recordArrival = true}) {
     final fallback = Padding(
       padding: EdgeInsets.all(width * .11),
       child: Column(
@@ -1712,18 +1712,8 @@ class NovelCover extends StatelessWidget {
     return Container(
       width: width,
       height: height,
-      decoration: BoxDecoration(
-        color: accent,
-        borderRadius: BorderRadius.circular(
-          clip ? ArchiveDesign.coverRadius : 0,
-        ),
-      ),
-      child: !clip
-          ? face
-          : ClipRRect(
-              borderRadius: BorderRadius.circular(ArchiveDesign.coverRadius),
-              child: face,
-            ),
+      color: accent,
+      child: face,
     );
   }
 }

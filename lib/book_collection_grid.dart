@@ -197,7 +197,6 @@ class BookGridFailure extends StatelessWidget {
                 context,
               ).colorScheme.onSurface.withValues(alpha: .04),
               border: Border.all(color: Theme.of(context).dividerColor),
-              borderRadius: BorderRadius.circular(ArchiveDesign.coverRadius),
             ),
             child: const Center(
               child: AppText(

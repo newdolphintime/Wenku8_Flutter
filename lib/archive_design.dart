@@ -21,7 +21,6 @@ abstract final class ArchiveDesign {
   static const darkMuted = Color(0xFFB7B7B7);
   static const darkMilk = Color(0xFFF6F6F6);
   static const panelRadius = 4.0;
-  static const coverRadius = 3.0;
 
   /// A thin neutral milk layer, not a white opaque sheet or another blur pass.
   static Color glassTint(Brightness brightness, {required double opacity}) =>
