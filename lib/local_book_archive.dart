@@ -45,6 +45,7 @@ Archive readLocalBookArchive(
   InputStream input, {
   required int maxSize,
   int maxEntrySize = 40 * 1024 * 1024,
+  bool allowLargeMedia = false,
 }) {
   if (input.totalLength < 22) {
     throw const FormatException('压缩文件不完整，请重新下载原书');
@@ -67,7 +68,7 @@ Archive readLocalBookArchive(
   var declared = 0;
   for (final header in headers.fileHeaders) {
     declared += header.uncompressedSize;
-    _checkEntryLimits(header, declared, maxSize, maxEntrySize);
+    _checkEntryLimits(header, declared, maxSize, maxEntrySize, allowLargeMedia);
   }
   input.setPosition(0);
   final archive = ZipDecoder().decodeStream(input);
@@ -77,7 +78,7 @@ Archive readLocalBookArchive(
     total += entry.size;
     _checkExpandedSize(total, maxSize);
     if (entry.isSymbolicLink ||
-        entry.size > maxEntrySize ||
+        _entryTooLarge(entry.name, entry.size, maxEntrySize, allowLargeMedia) ||
         _unsupportedPath(entry.name)) {
       throw const FormatException('压缩包大小或路径不受支持');
     }
@@ -98,6 +99,7 @@ LocalBookArchiveRecovery readLocalBookArchiveForRecovery(
   InputStream input, {
   required int maxSize,
   int maxEntrySize = 40 * 1024 * 1024,
+  bool allowLargeMedia = false,
 }) {
   final directory = _readRecoveryDirectory(input);
   if (directory.fileHeaders.isEmpty) {
@@ -110,7 +112,7 @@ LocalBookArchiveRecovery readLocalBookArchiveForRecovery(
   final names = <String>{};
   for (final header in directory.fileHeaders) {
     declared += header.uncompressedSize;
-    _checkEntryLimits(header, declared, maxSize, maxEntrySize);
+    _checkEntryLimits(header, declared, maxSize, maxEntrySize, allowLargeMedia);
     if (header.diskNumberStart != 0 || header.generalPurposeBitFlag & 1 != 0) {
       throw const FormatException('不支持分卷或加密 ZIP，请选择未加密的完整原书');
     }
@@ -171,10 +173,16 @@ void _checkEntryLimits(
   int total,
   int maxSize,
   int maxEntrySize,
+  bool allowLargeMedia,
 ) {
   _checkExpandedSize(total, maxSize);
   if (header.uncompressedSize < 0 ||
-      header.uncompressedSize > maxEntrySize ||
+      _entryTooLarge(
+        header.filename,
+        header.uncompressedSize,
+        maxEntrySize,
+        allowLargeMedia,
+      ) ||
       (header.externalFileAttributes >> 16) & 0xf000 == 0xa000) {
     throw const FormatException('压缩包包含不支持的文件或大小超出限制');
   }
@@ -182,6 +190,16 @@ void _checkEntryLimits(
     throw const FormatException('压缩包大小或路径不受支持');
   }
 }
+
+// Audio/video stays in the original archive. The reader never expands it into
+// chapter or image memory, while the archive-wide expanded limit still applies.
+final _epubMediaPath = RegExp(
+  r'\.(mov|mp4|m4v|webm|ogv|mp3|m4a|aac|ogg|oga|wav|flac)$',
+  caseSensitive: false,
+);
+
+bool _entryTooLarge(String name, int size, int limit, bool allowLargeMedia) =>
+    size > limit && !(allowLargeMedia && _epubMediaPath.hasMatch(name));
 
 void _checkExpandedSize(int total, int maxSize) {
   if (total > maxSize) {

@@ -83,10 +83,12 @@ Map<String, LocalBookImageResult> readLocalEpubImagesFromInput(
         ? readLocalBookArchiveForRecovery(
             buffer.stream,
             maxSize: maxExpandedLocalEpubBytes,
+            allowLargeMedia: true,
           ).archive
         : readLocalBookArchive(
             buffer.stream,
             maxSize: maxExpandedLocalEpubBytes,
+            allowLargeMedia: true,
           );
     for (final entry in paths.entries) {
       final name = entry.key, path = entry.value;

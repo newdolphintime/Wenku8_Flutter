@@ -245,10 +245,12 @@ Archive boundedZip(
   Uint8List bytes, {
   int maxSize = 160 * 1024 * 1024,
   int maxEntrySize = 40 * 1024 * 1024,
+  bool allowLargeMedia = false,
 }) => readLocalBookArchive(
   InputMemoryStream(bytes),
   maxSize: maxSize,
   maxEntrySize: maxEntrySize,
+  allowLargeMedia: allowLargeMedia,
 );
 
 ImportedBook _epub(
@@ -269,8 +271,11 @@ ImportedBook _epub(
   bool coverOnly = false,
   bool normalizeMarkup = true,
 }) {
-  final zip =
-      archive ?? boundedZip(input.bytes, maxSize: maxExpandedLocalEpubBytes);
+  final zip = archive ?? boundedZip(
+    input.bytes,
+    maxSize: maxExpandedLocalEpubBytes,
+    allowLargeMedia: true,
+  );
   final files = {
     for (final f in zip)
       if (f.isFile) f.name: f,
@@ -1485,6 +1490,7 @@ Future<_ImportedFile> _importOriginal(_ImportJob job) async {
           ? readLocalBookArchiveForRecovery(
               stream,
               maxSize: maxExpandedLocalEpubBytes,
+              allowLargeMedia: true,
             )
           : null;
       parsed = _epub(
@@ -1493,7 +1499,11 @@ Future<_ImportedFile> _importOriginal(_ImportJob job) async {
         digest,
         archive:
             recovered?.archive ??
-            readLocalBookArchive(stream, maxSize: maxExpandedLocalEpubBytes),
+            readLocalBookArchive(
+              stream,
+              maxSize: maxExpandedLocalEpubBytes,
+              allowLargeMedia: true,
+            ),
         damagedEntries: recovered?.damagedEntries,
         autoTitles: options.autoTitles,
         mergeUnlistedIllustrations: options.inlineEpubImages,
@@ -1718,7 +1728,11 @@ List<String> _readImageSizing(_ImageSizingJob job) {
       LocalBookInput(job.name, Uint8List(0)),
       job.id,
       job.digest,
-      archive: readLocalBookArchive(stream, maxSize: maxExpandedLocalEpubBytes),
+      archive: readLocalBookArchive(
+        stream,
+        maxSize: maxExpandedLocalEpubBytes,
+        allowLargeMedia: true,
+      ),
       saveImage: (_, _) {},
       // Keep the stored directory layout and bookmark offsets; this migration
       // changes image sizing only.

@@ -57,7 +57,11 @@ Future<Map<String, dynamic>> _upgradeStoredEpub(
   await staging.create();
   final stream = InputFileStream('${folder.path}/original');
   try {
-    final archive = readLocalBookArchive(stream, maxSize: maxExpandedLocalEpubBytes);
+    final archive = readLocalBookArchive(
+      stream,
+      maxSize: maxExpandedLocalEpubBytes,
+      allowLargeMedia: true,
+    );
     final names = <String, String>{};
     final old = _epub(
       LocalBookInput(source['name'], Uint8List(0)),
@@ -204,6 +208,7 @@ Future<String?> _rebuildStoredCover(
       archive: readLocalBookArchive(
         buffer.stream,
         maxSize: maxExpandedLocalEpubBytes,
+        allowLargeMedia: true,
       ),
       coverOnly: true,
     );
@@ -238,7 +243,11 @@ Future<int> _compactStoredEpub(
   final stream = InputFileStream('${folder.path}/original');
   var freed = 0;
   try {
-    final archive = readLocalBookArchive(stream, maxSize: maxExpandedLocalEpubBytes);
+    final archive = readLocalBookArchive(
+      stream,
+      maxSize: maxExpandedLocalEpubBytes,
+      allowLargeMedia: true,
+    );
     final entries = <String, String>{};
     final index = File('${folder.path}/media.json');
     if (await index.exists()) {
