@@ -19,7 +19,7 @@ const updateRepository = String.fromEnvironment(
   defaultValue: officialUpdateRepository,
 );
 const currentAppVersion = 'v1.0.0';
-const currentAppBuild = 4;
+const currentAppBuild = 7;
 
 class ReleaseVersion implements Comparable<ReleaseVersion> {
   const ReleaseVersion(this.major, this.minor, this.patch, [this.build = 0]);
@@ -685,9 +685,8 @@ class AppUpdates extends ChangeNotifier {
   bool get autoCheck => preferences.getBool('checkAppUpdates') ?? true;
   String? get installedReleaseKey =>
       installed == null ? null : '${installed!.version}+${installed!.build}';
-  bool get shouldShowReleaseNotes =>
-      installedReleaseKey != null &&
-      preferences.getString('completedReleaseNotes') != installedReleaseKey;
+  // This local reader opens directly after installation and upgrades.
+  bool get shouldShowReleaseNotes => false;
 
   Future<void> rememberReleaseNotes(InstalledApp shown) async {
     if (!await preferences.setString(

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart' show setEquals;
+import 'package:flutter/foundation.dart' show listEquals, setEquals;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/semantics.dart' show CustomSemanticsAction;
@@ -8467,9 +8467,6 @@ class _ReaderPageState extends State<ReaderPage>
     });
   }
 
-  Future<void> _saveQuote(ReaderQuoteSelection selected) =>
-      _editQuoteAnnotation(selected, ReaderMarkStyle.highlight);
-
   Future<ReaderAnnotationContext?> _annotationRangeContext(
     List<ReaderUnderlineRange> ranges,
     ReadingPosition anchor,
@@ -8551,10 +8548,10 @@ class _ReaderPageState extends State<ReaderPage>
     return result;
   }
 
-  Future<void> _editQuoteAnnotation(
-    ReaderQuoteSelection selected,
-    ReaderMarkStyle initialStyle,
-  ) async {
+  bool _savingQuote = false;
+
+  Future<void> _saveQuote(ReaderQuoteSelection selected) async {
+    if (_savingQuote) return;
     final position = _quotePosition(selected);
     if (position == null || selected.ranges.isEmpty) {
       showNovelFeedback(context, '暂时无法定位完整选区，请重新选择');
@@ -8588,26 +8585,43 @@ class _ReaderPageState extends State<ReaderPage>
     _cancelExitRequest();
     _stopAutoScroll();
     _suspendListeningFollow();
+    _savingQuote = true;
     try {
-      await showReaderAnnotationEditor(
-        context,
-        state: widget.state,
-        novelId: widget.novel.id,
+      final order = _sourceBook.chapters.map((chapter) => chapter.id);
+      final selectedRanges = canonicalReaderUnderlineRanges(
+        ranges,
+        chapterOrder: order,
+      );
+      final existing = widget.state.bookmarksFor(widget.novel.id).where(
+        (mark) =>
+            mark.isUnderline &&
+            listEquals(
+              canonicalReaderUnderlineRanges(
+                mark.underlineRanges,
+                chapterOrder: order,
+              ),
+              selectedRanges,
+            ),
+      ).firstOrNull;
+      await widget.state.saveAnnotation(
         novel: _sourceBook,
         position: position,
-        ranges: ranges,
+        ranges: selectedRanges,
         quote: selected.text,
-        initialStyle: initialStyle,
-        rangeContextResolver: _annotationRangeContext,
-        surfaceWrapper: _readerSurface,
+        style: ReaderMarkStyle.underline,
+        color: ReaderMarkColor.rose,
+        note: existing?.note ?? '',
       );
+      if (mounted) showNovelFeedback(context, '已划线并保存到书签');
     } catch (error) {
       if (mounted) {
         showNovelFeedback(
           context,
-          error is FormatException ? error.message : '标记与批注暂时无法打开，请重试',
+          error is FormatException ? error.message : '书签保存失败，请重试',
         );
       }
+    } finally {
+      _savingQuote = false;
     }
   }
 
