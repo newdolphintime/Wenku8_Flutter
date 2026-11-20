@@ -33,7 +33,7 @@ flutter pub get --enforce-lockfile
 flutter build apk --release --no-pub --target-platform android-arm,android-arm64,android-x64
 ```
 
-APK 生成在 `build/app/outputs/flutter-apk/app-release.apk`。覆盖安装此分支旧版时，沿用相同的应用签名。正式构建的签名配置通过本地 `android/key.properties` 提供。
+APK 生成在 `build/app/outputs/flutter-apk/app-release.apk`。覆盖安装此分支旧版时，沿用相同的应用签名。正式构建的签名配置通过本地 `android/key.properties` 提供。 另一台机器可按 [签名恢复说明](../signing/README.md) 恢复仓库中的加密签名备份。
 
 ## 公开源码与许可
 

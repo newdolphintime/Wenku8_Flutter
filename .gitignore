@@ -170,3 +170,6 @@ key.properties
 !android/gradlew
 !android/gradlew.bat
 !android/gradle/wrapper/gradle-wrapper.jar
+
+# Restored Android signing material
+/android/*.p12

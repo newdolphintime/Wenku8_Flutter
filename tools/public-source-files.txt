@@ -1113,3 +1113,6 @@ android/app/src/main/res/mipmap-xxhdpi/ic_launcher_round.png
 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_background.png
 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png
 android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_round.png
+scripts/restore_android_signing.sh
+signing/README.md
+signing/android-release.tar.gz.enc
