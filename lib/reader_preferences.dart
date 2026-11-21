@@ -128,6 +128,7 @@ class ReaderPreferences {
     this.hideSystemStatus = false,
     this.showStatusInfo = true,
     this.chapterEntrance = false,
+    this.tapImagePreview = true,
     this.nightTextBrightness = .82,
     this.letterSpacing = .1,
     this.textWeight = ReaderTextWeight.regular,
@@ -159,6 +160,7 @@ class ReaderPreferences {
   final bool showStatusInfo;
   bool get showReaderStatus => hideSystemStatus && showStatusInfo;
   final bool chapterEntrance;
+  final bool tapImagePreview;
   final double nightTextBrightness;
   final double letterSpacing;
   final ReaderTextWeight textWeight;
@@ -241,6 +243,7 @@ class ReaderPreferences {
     'hideSystemStatus': hideSystemStatus,
     'showStatusInfo': showStatusInfo,
     'chapterEntrance': chapterEntrance,
+    'tapImagePreview': tapImagePreview,
     'nightTextBrightness': nightTextBrightness,
     'letterSpacing': letterSpacing,
     'textWeight': textWeight.name,
@@ -271,6 +274,7 @@ class ReaderPreferences {
       'hideSystemStatus',
       'showStatusInfo',
       'chapterEntrance',
+      'tapImagePreview',
       'paragraphGapOverride',
       'catalogueReversed',
     ]) {
@@ -331,6 +335,7 @@ class ReaderPreferences {
       hideSystemStatus: json['hideSystemStatus'] == true,
       showStatusInfo: json['showStatusInfo'] != false,
       chapterEntrance: json['chapterEntrance'] == true,
+      tapImagePreview: json['tapImagePreview'] != false,
       pageEffect: ReaderPageEffect.values.byName(
         json['pageEffect'] ?? 'staggered',
       ),
@@ -372,6 +377,7 @@ class ReaderPreferences {
     bool? hideSystemStatus,
     bool? showStatusInfo,
     bool? chapterEntrance,
+    bool? tapImagePreview,
     double? nightTextBrightness,
     double? letterSpacing,
     ReaderTextWeight? textWeight,
@@ -409,6 +415,7 @@ class ReaderPreferences {
     hideSystemStatus: hideSystemStatus ?? this.hideSystemStatus,
     showStatusInfo: showStatusInfo ?? this.showStatusInfo,
     chapterEntrance: chapterEntrance ?? this.chapterEntrance,
+    tapImagePreview: tapImagePreview ?? this.tapImagePreview,
     nightTextBrightness: nightTextBrightness ?? this.nightTextBrightness,
     letterSpacing: letterSpacing ?? this.letterSpacing,
     textWeight: textWeight ?? this.textWeight,
@@ -456,6 +463,7 @@ class ReaderPreferences {
     hideSystemStatus: hideSystemStatus,
     showStatusInfo: showStatusInfo,
     chapterEntrance: chapterEntrance,
+    tapImagePreview: tapImagePreview,
     statusSideInset: statusSideInset,
     statusFontSize: statusFontSize,
     statusTopOffset: statusTopOffset,

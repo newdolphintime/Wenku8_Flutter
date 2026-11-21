@@ -7397,17 +7397,19 @@ class _ReaderPageState extends State<ReaderPage>
         localLayout: LocalImageLayout.fromParagraph(paragraphs[index]),
         fontSize: MediaQuery.textScalerOf(context).scale(style.fontSize ?? 19),
         sizedFrame: sizedImage,
-        onOpen: () => pushNovelPage<void>(
-          context,
-          _readerSurface(
-            ReaderIllustrationGallery(
-              urls: source!.illustrations,
-              initialUrl: url,
-            ),
-          ),
-          slot: ReaderIllustrationGallery,
-          reduceMotion: widget.state.reduceMotion,
-        ),
+        onOpen: !_readerPreferences.tapImagePreview
+            ? null
+            : () => pushNovelPage<void>(
+                context,
+                _readerSurface(
+                  ReaderIllustrationGallery(
+                    urls: source!.illustrations,
+                    initialUrl: url,
+                  ),
+                ),
+                slot: ReaderIllustrationGallery,
+                reduceMotion: widget.state.reduceMotion,
+              ),
       );
       final placement = source?.placementIds[index];
       return placement == null
@@ -10361,6 +10363,7 @@ class _ReaderPageState extends State<ReaderPage>
               paragraphStyle,
               prefs.indent,
               prefs.justify,
+              prefs.tapImagePreview,
               prefs.paragraphGap,
               prefs.paragraphGapOverride,
               _fontSize,
@@ -10422,6 +10425,7 @@ class _ReaderPageState extends State<ReaderPage>
                   paragraphStyle,
                   prefs.indent,
                   prefs.justify,
+                  prefs.tapImagePreview,
                   prefs.paragraphGap,
                   prefs.paragraphGapOverride,
                   _listening,

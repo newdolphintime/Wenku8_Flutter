@@ -1783,6 +1783,13 @@ class _ReaderToolsState extends State<ReaderTools>
   List<Widget> _behaviorItems(BuildContext context, String category) {
     final prefs = _readerPreferences;
     return [
+      if (category == 'turn')
+        _switch(
+          context,
+          '点击图片预览',
+          prefs.tapImagePreview,
+          (v) => _preferences(prefs.copyWith(tapImagePreview: v)),
+        ),
       if (category == 'turn' &&
           isLocalBook(widget.novel.id) &&
           widget.listeningBuilder != null)

@@ -23,36 +23,6 @@ TextStyle _chapterHeadingStyle(TextStyle style) => style.copyWith(
   color: style.color?.withValues(alpha: .6),
 );
 
-List<String> _localImagePriority(ReaderContent content, int? paragraph) {
-  final local = content.illustrations.where(
-    (url) => url.startsWith('wenku-local:'),
-  );
-  if (paragraph == null || paragraph <= 0) return local.take(4).toList();
-  if (local.isEmpty) return const [];
-  final order = content.readingOrder;
-  final count = order?.length ?? content.paragraphs.length;
-  final center = order?.indexOf(paragraph) ?? paragraph;
-  if (center < 0 || center >= count) return local.take(4).toList();
-  final result = <String>{};
-  void add(int index) {
-    if (index < 0 || index >= count) return;
-    final url = readerIllustrationUrl(
-      content.paragraphs[order?[index] ?? index],
-    );
-    if (url != null && url.startsWith('wenku-local:')) result.add(url);
-  }
-
-  for (
-    var distance = 0;
-    result.length < 4 && (center + distance < count || center - distance >= 0);
-    distance++
-  ) {
-    add(center + distance);
-    if (distance > 0 && result.length < 4) add(center - distance);
-  }
-  return result.toList(growable: false);
-}
-
 Offset _bodyOrigin(
   BuildContext context,
   String title,
@@ -356,11 +326,119 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) {
               widget.onReady();
-              widget.onChanged();
+              _pageChanged();
             }
           });
         }
       });
+  final _art = <ReaderLeaf, PreparedLeafArt>{};
+  final _preparing = <ReaderLeaf, Future<void>>{};
+  int _navigation = 0;
+  double _drag = 0;
+
+  Iterable<ReaderLeaf> _leaves(
+    ReaderPagination pagination,
+    int first,
+    int count,
+  ) sync* {
+    for (var i = first; i < first + count; i++) {
+      if (i >= 0 && i < pagination.pages.length) yield pagination.pages[i];
+    }
+  }
+
+  Future<void>? _prepareLeaves(Iterable<ReaderLeaf> leaves) {
+    final waiting = <Future<void>>[];
+    final ratio = MediaQuery.devicePixelRatioOf(context);
+    for (final leaf in leaves) {
+      final pending = _preparing[leaf];
+      if (pending != null) {
+        waiting.add(pending);
+        continue;
+      }
+      if (_art.containsKey(leaf)) continue;
+      final images = <String, Size>{};
+      for (final fragment in leaf.fragments) {
+        if (!fragment.image) continue;
+        final url = readerIllustrationUrl(fragment.text);
+        if (url != null && url.startsWith('wenku-local:')) {
+          images[url] = fragment.rect.size;
+        }
+      }
+      if (images.isEmpty) continue;
+      final art = PreparedLeafArt();
+      _art[leaf] = art;
+      final future = art.prepareImages(images, ratio).whenComplete(() {
+        if (identical(_art[leaf], art)) _preparing.remove(leaf);
+      });
+      _preparing[leaf] = future;
+      waiting.add(future);
+    }
+    return waiting.isEmpty ? null : Future.wait(waiting).then((_) {});
+  }
+
+  Iterable<ReaderLeaf> _spreadLeaves(int spread) {
+    final side = spread < 0
+        ? -1
+        : spread >= _spreadCount
+        ? 1
+        : 0;
+    if (side == 0) {
+      return _leaves(
+        _pagination!,
+        spread * _perSpread - _leadingPages,
+        _perSpread,
+      );
+    }
+    final adjacent = _adjacentLayouts[side];
+    if (adjacent == null) return const [];
+    final count = adjacent.bookLayout.count;
+    final first = side < 0
+        ? ((adjacent.pagination.pages.length - 1) ~/ count) * count
+        : 0;
+    return _leaves(adjacent.pagination, first, count);
+  }
+
+  void _warmBoundaryIfNear(int direction) {
+    if (_pagination == null || _layingOut) return;
+    final spread = _spreadFor(_page);
+    if (spread + direction < 0 || spread + direction >= _spreadCount) {
+      _prepareLeaves(_spreadLeaves(spread + direction));
+    }
+  }
+
+  void _pageChanged() {
+    widget.onChanged();
+    if (!mounted || _pagination == null) return;
+    final spread = _spreadFor(_page);
+    final nearby = {
+      for (final n in [spread, spread + 1, spread - 1]) ..._spreadLeaves(n),
+    };
+    if (_swipeOrigin case final n?) nearby.addAll(_spreadLeaves(n));
+    nearby.addAll(_spreadLeaves(_spreadFor(_target)));
+    for (final leaf
+        in _art.keys.where((leaf) => !nearby.contains(leaf)).toList()) {
+      _art.remove(leaf)!.dispose();
+      _preparing.remove(leaf);
+    }
+    _prepareLeaves(nearby);
+  }
+
+  void _whenPrepared(int spread, VoidCallback turn) {
+    final ticket = ++_navigation, generation = _generation;
+    final pending = _prepareLeaves(_spreadLeaves(spread));
+    if (pending == null) {
+      turn();
+      return;
+    }
+    unawaited(
+      pending.then((_) {
+        if (mounted && ticket == _navigation && generation == _generation) {
+          turn();
+        }
+      }),
+    );
+  }
+
   bool _programmaticTurn = false;
   bool _swipeFeedbackSent = false;
   bool _swipeCancelled = false;
@@ -605,6 +683,10 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
   @override
   void dispose() {
     _generation++;
+    for (final art in _art.values) {
+      art.dispose();
+    }
+    _art.clear();
     if (widget.controller._owner == this) widget.controller._owner = null;
     _pager?.dispose();
     _arrival.dispose();
@@ -662,6 +744,19 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
   void _move(int page, {bool animate = false, ReaderTextAnchor? anchor}) {
     final pager = _pager;
     if (_pagination == null || pager == null) return;
+    final target = page.clamp(0, _pagination!.pages.length - 1);
+    _whenPrepared(
+      _spreadFor(target),
+      () => _movePrepared(target, animate: animate, anchor: anchor),
+    );
+  }
+
+  void _movePrepared(
+    int page, {
+    required bool animate,
+    ReaderTextAnchor? anchor,
+  }) {
+    final pager = _pager!;
     final previousPage = _page;
     _target = page.clamp(0, _pagination!.pages.length - 1);
     _readingAnchor = anchor ?? _anchorForPage(_target);
@@ -683,10 +778,12 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
           _swipeOrigin = null;
         }
       });
-      widget.onChanged();
+      _pageChanged();
       return;
     }
-    if (animate && _effect != ReaderPageEffect.none) {
+    if (animate &&
+        (destination - current).abs() <= 1.01 &&
+        _effect != ReaderPageEffect.none) {
       _animateSpread(destination);
     } else {
       _programmaticTurn = false;
@@ -723,12 +820,14 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
       return false;
     }
     final spread = direction < 0 ? -1 : _spreadCount;
-    if (_effect == ReaderPageEffect.none) {
-      _pager!.jumpToPage(spread + _edgeSlots);
-      _finishBoundary(direction.sign);
-    } else {
-      _animateSpread(spread);
-    }
+    _whenPrepared(spread, () {
+      if (_effect == ReaderPageEffect.none) {
+        _pager!.jumpToPage(spread + _edgeSlots);
+        _finishBoundary(direction.sign);
+      } else {
+        _animateSpread(spread);
+      }
+    });
     return true;
   }
 
@@ -868,6 +967,7 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
           widget.padding,
           heading,
         );
+        _warmBoundaryIfNear(direction);
         changed = true;
         continue;
       }
@@ -914,6 +1014,7 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
               heading,
             ),
           );
+          _warmBoundaryIfNear(direction);
         } catch (_) {
           // The normal request/retry path remains available at an unready edge.
         }
@@ -956,6 +1057,29 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
     _turn.value = progress.clamp(0.0, 1.0);
   }
 
+  List<ReaderLeaf>? _openingLeaves;
+
+  Widget _openingSpread(List<ReaderLeaf> leaves, ReaderBookLayout layout) {
+    return _surface(
+      Padding(
+        padding: widget.padding.copyWith(
+          top: widget.padding.top + _headingExtent,
+        ),
+        child: ReaderBookSpread(
+          layout: layout,
+          rightToLeft: widget.preferences.mode == ReaderMode.vertical,
+          pages: [
+            for (final leaf in leaves)
+              if (_art[leaf] case final art?)
+                ReaderLeafArtScope(art: art, child: widget.pageBuilder(leaf))
+              else
+                widget.pageBuilder(leaf),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _layout(
     ReaderBookLayout bookLayout,
     TextScaler scaler,
@@ -963,6 +1087,7 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
   ) async {
     final size = bookLayout.pageSize;
     final ticket = ++_generation;
+    _openingLeaves = null;
     final content = widget.content;
     final preferences = widget.preferences;
     final padding = widget.padding;
@@ -995,28 +1120,83 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
         await Future<void>.value();
         result = retained?.pagination ?? landed!.pagination;
       } else {
-        final imageSizes = await ReaderIllustrationCache.shared
-            .measureLocalImages(
-              content.illustrations,
-              current: () => mounted && ticket == _generation,
-              prioritize: _localImagePriority(
-                content,
-                (_anchorFor(_pendingPosition) ?? _readingAnchor ?? oldAnchor)
-                    ?.paragraph,
+        final imageCache = ReaderIllustrationCache.shared;
+        bool current() => mounted && ticket == _generation;
+        final landing = _anchorFor(_pendingPosition);
+        final preview =
+            (_pagination == null || chapterChanged) &&
+            pageBreak == null &&
+            _pendingFraction == null &&
+            (landing != null || (_pendingPosition?.fraction ?? 0) == 0);
+        final spread = <ReaderLeaf>[];
+        bool containsLanding = landing == null, found = false;
+        Future<void> showOpening(List<ReaderLeaf> leaves) async {
+          final preparing = _prepareLeaves(leaves);
+          if (preparing != null) await preparing;
+          if (current() && _layingOut) setState(() => _openingLeaves = leaves);
+        }
+
+        void completed(ReaderLeaf leaf) {
+          if (found) return;
+          spread.add(leaf);
+          if (landing != null &&
+              leaf.fragments.any(
+                (f) =>
+                    f.paragraph == landing.paragraph &&
+                    (f.image ||
+                        landing.offset >= f.start && landing.offset < f.end),
+              )) {
+            containsLanding = true;
+          }
+          if (spread.length == bookLayout.count) {
+            if (containsLanding) {
+              found = true;
+              unawaited(showOpening(List.of(spread)));
+            }
+            spread.clear();
+          }
+        }
+
+        // Start outside LayoutBuilder: a cached first leaf can finish synchronously.
+        await Future<void>.value();
+        if (!current()) return;
+        final sizes = <String, Size>{};
+        bool measuredTail = false;
+        final attempted = <String>{};
+        Future<Size?> measure(String url) async {
+          if (imageCache.sizeOf(url) case final known?) return known;
+          if (!attempted.add(url)) return null;
+          if (!measuredTail && (!preview || found)) {
+            measuredTail = true;
+            sizes.addAll(
+              await imageCache.measureLocalImages(
+                content.illustrations,
+                current: current,
+                prioritize: [url],
+                retainPriority: true,
               ),
-              retainPriority: true,
             );
-        if (!mounted || ticket != _generation) return;
+            return sizes[url];
+          }
+          try {
+            return await imageCache.dimensions(url);
+          } catch (_) {
+            return null;
+          }
+        }
+
         result = await paginateReader(
           content: content,
           size: size,
           style: _layoutStyle,
           preferences: preferences,
           scaler: scaler,
-          current: () => mounted && ticket == _generation,
+          current: current,
           pageBreak: pageBreak,
           cache: _textLayout,
-          localImageSizes: imageSizes,
+          localImageSizes: sizes,
+          measureImage: measure,
+          onLeaf: preview ? completed : null,
         );
       }
     } catch (_) {
@@ -1062,6 +1242,16 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
         ((page + leadingPages) ~/ bookLayout.count * bookLayout.count -
                 leadingPages)
             .clamp(0, result.pages.length - 1);
+    final preparing = _prepareLeaves(
+      _leaves(
+        result,
+        (page + leadingPages) ~/ bookLayout.count * bookLayout.count -
+            leadingPages,
+        bookLayout.count,
+      ),
+    );
+    if (preparing != null) await preparing;
+    if (!mounted || ticket != _generation) return;
     final readingAnchor = _pendingFraction == null && anchor != null
         ? anchor
         : result.pages[first].anchor;
@@ -1082,7 +1272,9 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
         (_bookLayout?.count != bookLayout.count ||
             _pagination?.size.width != result.size.width);
     final animate =
-        !widget.reduceMotion && !MediaQuery.disableAnimationsOf(context);
+        _openingLeaves == null &&
+        !widget.reduceMotion &&
+        !MediaQuery.disableAnimationsOf(context);
     final boundaryTurn =
         chapterChanged && (widget.chapterTurnDirection != 0 || reuseLanded);
     final animateBoundary =
@@ -1136,6 +1328,7 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
     _rememberLayout(key, result, leadingPages);
     setState(() {
       _turnSpread = null;
+      _openingLeaves = null;
       _pagination = result;
       _chapterOutgoing = chapterOutgoing;
       _boundaryLanding = null;
@@ -1188,7 +1381,7 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
       oldPager?.dispose();
       if (mounted && ticket == _generation) {
         widget.onReady();
-        widget.onChanged();
+        _pageChanged();
       }
     });
   }
@@ -1404,6 +1597,10 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
         slots: layout.count,
         child: page,
       );
+      final art = _art[pagination.pages[index]];
+      if (art != null && !_preparing.containsKey(pagination.pages[index])) {
+        page = ReaderLeafArtScope(art: art, child: page);
+      }
       pages.add(paper(page, slot));
     }
     final book = ReaderBookSpread(
@@ -1780,6 +1977,9 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
           ),
         );
       }
+      if (_openingLeaves case final leaves?) {
+        return _openingSpread(leaves, bookLayout);
+      }
       if (pagination == null) {
         return Stack(
           fit: StackFit.expand,
@@ -1798,6 +1998,13 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
       }
       final pendingViewport = _layingOut && _bookLayout!.key != bookLayout.key;
       final pager = _pager!;
+      bool illustrated(ReaderContent? content) =>
+          content?.illustrations.any((url) => url.startsWith('wenku-local:')) ??
+          false;
+      final guarded =
+          illustrated(widget.content) ||
+          illustrated(widget.previousChapter?.content) ||
+          illustrated(widget.nextChapter?.content);
       final pageView = NotificationListener<ScrollNotification>(
         onNotification: (notification) {
           if (!mounted ||
@@ -1888,28 +2095,30 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
                 ReaderMode.vertical,
             clipBehavior: Clip.none,
             pageSnapping: false,
-            physics: ReaderPagePhysics(
-              onUserPageCommitted: _acknowledgePageCommit,
-              liveDurationScale: () =>
-                  widget.preferences.pageSpeed.durationScale,
-              // The short-stroke limit belongs to finger gestures. A
-              // follow/bookmark landing can cross several spreads; its
-              // final ballistic phase must not snap back to origin + 1.
-              origin: () => _programmaticTurn || _swipeOrigin == null
-                  ? null
-                  : _swipeOrigin! + _edgeSlots,
-              pageBounds: _edgeSlots == 0
-                  ? null
-                  : () => (
-                      first: _adjacentLayouts.containsKey(-1) ? 0 : 1,
-                      last:
-                          _spreadCount +
-                          (_adjacentLayouts.containsKey(1) ? 1 : 0),
+            physics: guarded
+                ? const NeverScrollableScrollPhysics()
+                : ReaderPagePhysics(
+                    onUserPageCommitted: _acknowledgePageCommit,
+                    liveDurationScale: () =>
+                        widget.preferences.pageSpeed.durationScale,
+                    // The short-stroke limit belongs to finger gestures. A
+                    // follow/bookmark landing can cross several spreads; its
+                    // final ballistic phase must not snap back to origin + 1.
+                    origin: () => _programmaticTurn || _swipeOrigin == null
+                        ? null
+                        : _swipeOrigin! + _edgeSlots,
+                    pageBounds: _edgeSlots == 0
+                        ? null
+                        : () => (
+                            first: _adjacentLayouts.containsKey(-1) ? 0 : 1,
+                            last:
+                                _spreadCount +
+                                (_adjacentLayouts.containsKey(1) ? 1 : 0),
+                          ),
+                    parent: const ClampingScrollPhysics(
+                      parent: AlwaysScrollableScrollPhysics(),
                     ),
-              parent: const ClampingScrollPhysics(
-                parent: AlwaysScrollableScrollPhysics(),
-              ),
-            ),
+                  ),
             itemCount: _spreadCount + _edgeSlots * 2,
             onPageChanged: (value) {
               if (!mounted || !identical(_pager, pager)) return;
@@ -1930,7 +2139,7 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
               _pageBodies.removeWhere(
                 (index, _) => (_spreadFor(index) - value).abs() > 1,
               );
-              widget.onChanged();
+              _pageChanged();
             },
             itemBuilder: (context, index) {
               index -= _edgeSlots;
@@ -1996,7 +2205,31 @@ class _ReaderPagedViewState extends State<ReaderPagedView>
                 _layingOut ||
                 _chapterOutgoing != null ||
                 _boundaryLanding != null,
-            child: pageView,
+            child: !guarded
+                ? pageView
+                : GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onHorizontalDragStart: (_) {
+                      _drag = 0;
+                      widget.onUserScroll();
+                    },
+                    onHorizontalDragUpdate: (event) =>
+                        _drag += event.primaryDelta ?? 0,
+                    onHorizontalDragEnd: (event) {
+                      final velocity = event.primaryVelocity ?? 0;
+                      if (_drag.abs() <
+                              ReaderPagePhysics.commitDistance(
+                                _frameSize.width,
+                              ) &&
+                          !(velocity.abs() >= 360 && _drag.abs() >= 8)) {
+                        return;
+                      }
+                      final reverse =
+                          widget.preferences.mode == ReaderMode.vertical;
+                      widget.onBoundary((_drag < 0) != reverse ? 1 : -1);
+                    },
+                    child: pageView,
+                  ),
           ),
         ),
       );

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -33,6 +34,106 @@ typedef _IllustrationImage = ({
   _IllustrationSource? source,
 });
 
+/// Keeps the exact decoded stream live until its leaf leaves the reading window.
+class PreparedLeafArt {
+  final _images = <String, _IllustrationImage>{};
+  final _providers = <String, ResizeImage>{};
+  final _release = <VoidCallback>[];
+  bool _closed = false;
+
+  Future<void> prepareImages(Map<String, Size> images, double ratio) async {
+    final entries = images.entries.toList();
+    final cache = ReaderIllustrationCache.shared;
+    // Two cold images can share one EPUB open. Bound simultaneous decoders.
+    for (var i = 0; i < entries.length && !_closed; i += 2) {
+      final batch = entries.skip(i).take(2);
+      final reads = LocalBookMedia.loadBatch([
+        for (final entry in batch)
+          if (cache.peek(entry.key) == null &&
+              cache._pendingFor(entry.key) == null)
+            entry.key,
+      ]);
+      await Future.wait([
+        for (final entry in batch)
+          _prepare(entry.key, entry.value, ratio, reads[entry.key]),
+      ]);
+    }
+  }
+
+  Future<void> _prepare(
+    String url,
+    Size available,
+    double ratio,
+    Future<Uint8List>? input,
+  ) async {
+    final cache = ReaderIllustrationCache.shared;
+    try {
+      final read = cache._requestFor(url, input: input);
+      final bytes = await read.future;
+      final size =
+          cache.sizeOf(url) ??
+          await cache._rememberSize(url, bytes, read.source);
+      if (_closed) return;
+      final width = readerIllustrationDecodeWidth(
+        imageSize: size,
+        available: available,
+        devicePixelRatio: ratio,
+      );
+      final provider = cache._decodeProvider(url, bytes, read.source, width);
+      final stream = provider.resolve(ImageConfiguration.empty);
+      final first = Completer<void>();
+      final listener = ImageStreamListener(
+        (image, _) {
+          image.dispose();
+          if (!first.isCompleted) first.complete();
+        },
+        onError: (Object error, StackTrace? stack) {
+          if (!first.isCompleted) first.completeError(error, stack);
+        },
+      );
+      _release.add(() {
+        stream.removeListener(listener);
+        if (!first.isCompleted) first.complete();
+      });
+      stream.addListener(listener);
+      await first.future;
+      if (_closed || !cache._current(url, read.source)) return;
+      _providers[url] = provider;
+      _images[url] = (
+        bytes: bytes,
+        size: size,
+        source: read.source,
+        error: null,
+      );
+    } catch (error) {
+      if (!_closed) {
+        _images[url] = (bytes: null, size: null, source: null, error: error);
+      }
+    }
+  }
+
+  void dispose() {
+    _closed = true;
+    for (final release in _release) {
+      release();
+    }
+    _release.clear();
+    _images.clear();
+    _providers.clear();
+  }
+}
+
+class ReaderLeafArtScope extends InheritedWidget {
+  const ReaderLeafArtScope({
+    super.key,
+    required this.art,
+    required super.child,
+  });
+  final PreparedLeafArt art;
+  @override
+  bool updateShouldNotify(ReaderLeafArtScope old) => old.art != art;
+}
+
 class _IllustrationDecodes {
   _IllustrationDecodes(this.source);
   final _IllustrationSource source;
@@ -45,7 +146,7 @@ class ReaderIllustrationCache {
   ReaderIllustrationCache({
     IllustrationRequest? request,
     this.offlineReader,
-    this.maxBytes = 16 * 1024 * 1024,
+    this.maxBytes = 128 * 1024 * 1024,
   }) : _request = request ?? LegacyTransport.illustration;
   static final shared = ReaderIllustrationCache();
   final IllustrationRequest _request;
@@ -542,19 +643,32 @@ class _ReaderIllustrationState extends State<ReaderIllustration> {
 
   @override
   Widget build(BuildContext context) {
+    final art = context
+        .dependOnInheritedWidgetOfExactType<ReaderLeafArtScope>()
+        ?.art;
+    final candidate = art?._images[widget.url];
+    final source = candidate?.source;
+    final prepared = source != null
+        ? (_cache._current(widget.url, source) ? candidate : null)
+        : candidate;
     final cached = _cache.peek(widget.url), size = _cache.sizeOf(widget.url);
     return RepaintBoundary(
       child: FutureBuilder<_IllustrationImage>(
-        key: ObjectKey(_future),
-        future: _future,
-        initialData: cached != null && size != null
-            ? (
-                bytes: cached,
-                size: size,
-                error: null,
-                source: _cache._cache[widget.url]!.source,
-              )
-            : null,
+        key: ValueKey((
+          widget.url,
+          prepared == null ? _future : prepared.source,
+        )),
+        future: prepared == null ? _future : null,
+        initialData:
+            prepared ??
+            (cached != null && size != null
+                ? (
+                    bytes: cached,
+                    size: size,
+                    error: null,
+                    source: _cache._cache[widget.url]!.source,
+                  )
+                : null),
         builder: (context, snapshot) {
           final bytes = snapshot.data?.bytes;
           Widget frame(Widget child) => widget.sizedFrame
@@ -577,6 +691,7 @@ class _ReaderIllustrationState extends State<ReaderIllustration> {
               behavior: HitTestBehavior.opaque,
               onTap: () {
                 AppHaptics.play(context, HapticCue.action);
+                art?._images.remove(widget.url);
                 _cache.evict(widget.url);
                 setState(() {
                   _future = _load();
@@ -612,6 +727,7 @@ class _ReaderIllustrationState extends State<ReaderIllustration> {
                   AppText(_failureLabel(snapshot.data?.error)),
                   GlassTextButton(
                     onPressed: () {
+                      art?._images.remove(widget.url);
                       _cache.evict(widget.url);
                       setState(() {
                         _future = _load();
@@ -649,9 +765,12 @@ class _ReaderIllustrationState extends State<ReaderIllustration> {
                         widget.onOpen!();
                       },
                 child: Semantics(
-                  label: '章节插图，点击查看大图',
+                  label: widget.onOpen == null ? '章节插图' : '章节插图，点击查看大图',
                   image: true,
                   child: _IllustrationPixels(
+                    prepared: identical(prepared?.bytes, bytes)
+                        ? art?._providers[widget.url]
+                        : null,
                     cache: _cache,
                     url: widget.url,
                     bytes: bytes,
@@ -674,6 +793,7 @@ class _ReaderIllustrationState extends State<ReaderIllustration> {
                         : Center(
                             child: GlassTextButton(
                               onPressed: () {
+                                art?._images.remove(widget.url);
                                 _cache.evict(widget.url);
                                 setState(() {
                                   _future = _load();
@@ -703,6 +823,7 @@ class _IllustrationPixels extends StatefulWidget {
     required this.source,
     required this.width,
     required this.height,
+    this.prepared,
     required this.cacheWidth,
     required this.errorBuilder,
   });
@@ -711,6 +832,7 @@ class _IllustrationPixels extends StatefulWidget {
   final Uint8List bytes;
   final _IllustrationSource source;
   final double width, height;
+  final ResizeImage? prepared;
   final int cacheWidth;
   final ImageErrorWidgetBuilder errorBuilder;
 
@@ -735,12 +857,14 @@ class _IllustrationPixelsState extends State<_IllustrationPixels> {
 
   @override
   Widget build(BuildContext context) {
-    final provider = widget.cache._decodeProvider(
-      widget.url,
-      widget.bytes,
-      widget.source,
-      widget.cacheWidth,
-    );
+    final provider =
+        widget.prepared ??
+        widget.cache._decodeProvider(
+          widget.url,
+          widget.bytes,
+          widget.source,
+          widget.cacheWidth,
+        );
     return Image(
       image: provider,
       width: widget.width,

@@ -322,6 +322,8 @@ Future<ReaderPagination?> paginateReader({
   ReaderTextAnchor? pageBreak,
   ReaderTextLayoutCache? cache,
   Map<String, Size> localImageSizes = const {},
+  Future<Size?> Function(String)? measureImage,
+  void Function(ReaderLeaf leaf)? onLeaf,
 }) async {
   final pages = <ReaderLeaf>[];
   var fragments = <ReaderPageFragment>[];
@@ -379,6 +381,7 @@ Future<ReaderPagination?> paginateReader({
           ? ReaderLeaf(fragments, text: text, vertical: vertical)
           : ReaderLeaf._vertical(fragments, text, columns, glyphCache),
     );
+    onLeaf?.call(pages.last);
     fragments = [];
     columns = [];
     pageText = StringBuffer();
@@ -454,9 +457,13 @@ Future<ReaderPagination?> paginateReader({
         continue;
       }
       final imageUrl = readerIllustrationUrl(text);
-      if (imageUrl?.startsWith('wenku-local:') == true &&
-          localImageSizes.containsKey(imageUrl)) {
-        final natural = localImageSizes[imageUrl]!;
+      Size? natural;
+      if (imageUrl != null && imageUrl.startsWith('wenku-local:')) {
+        natural =
+            localImageSizes[imageUrl] ?? await measureImage?.call(imageUrl);
+        if (!current()) return null;
+      }
+      if (natural != null) {
         final imageSize = LocalImageLayout.fromParagraph(
           text,
         ).resolve(natural: natural, available: size, fontSize: font);
