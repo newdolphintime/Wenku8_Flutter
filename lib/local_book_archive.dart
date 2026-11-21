@@ -688,3 +688,209 @@ Uint8List readIndexedLocalBookEntry(
   }
   return bytes;
 }
+
+/// Parses image width/height from only the leading file header bytes (PNG, GIF,
+/// WebP, JPEG) without full bitmap decoding. Returns null if the header is
+/// incomplete, unsupported, or carries non-trivial EXIF rotation so callers can
+/// fall back to full decoding.
+({int width, int height})? probeImageDimensionsFromHeader(Uint8List bytes) {
+  if (bytes.length < 10) return null;
+  final data = ByteData.sublistView(bytes);
+  
+  // PNG: 8-byte signature + IHDR chunk (width @ 16, height @ 20).
+  if (bytes.length >= 24 &&
+      bytes[0] == 0x89 &&
+      bytes[1] == 0x50 &&
+      bytes[2] == 0x4E &&
+      bytes[3] == 0x47 &&
+      bytes[4] == 0x0D &&
+      bytes[5] == 0x0A &&
+      bytes[6] == 0x1A &&
+      bytes[7] == 0x0A &&
+      bytes[12] == 0x49 &&
+      bytes[13] == 0x48 &&
+      bytes[14] == 0x44 &&
+      bytes[15] == 0x52) {
+    final w = data.getUint32(16, Endian.big);
+    final h = data.getUint32(20, Endian.big);
+    return (w > 0 && h > 0) ? (width: w, height: h) : null;
+  }
+
+  // GIF87a / GIF89a (width @ 6, height @ 8).
+  if (bytes[0] == 0x47 &&
+      bytes[1] == 0x49 &&
+      bytes[2] == 0x46 &&
+      bytes[3] == 0x38 &&
+      (bytes[4] == 0x37 || bytes[4] == 0x39) &&
+      bytes[5] == 0x61) {
+    final w = data.getUint16(6, Endian.little);
+    final h = data.getUint16(8, Endian.little);
+    return (w > 0 && h > 0) ? (width: w, height: h) : null;
+  }
+
+  // WebP: RIFF....WEBP + VP8 / VP8L / VP8X.
+  if (bytes.length >= 25 &&
+      bytes[0] == 0x52 &&
+      bytes[1] == 0x49 &&
+      bytes[2] == 0x46 &&
+      bytes[3] == 0x46 &&
+      bytes[8] == 0x57 &&
+      bytes[9] == 0x45 &&
+      bytes[10] == 0x42 &&
+      bytes[11] == 0x50) {
+    final c0 = bytes[12], c1 = bytes[13], c2 = bytes[14], c3 = bytes[15];
+    // 'VP8 '
+    if (c0 == 0x56 && c1 == 0x50 && c2 == 0x38 && c3 == 0x20) {
+      if (bytes.length < 30 ||
+          bytes[23] != 0x9D ||
+          bytes[24] != 0x01 ||
+          bytes[25] != 0x2A) {
+        return null;
+      }
+      final w = data.getUint16(26, Endian.little) & 0x3FFF;
+      final h = data.getUint16(28, Endian.little) & 0x3FFF;
+      return (w > 0 && h > 0) ? (width: w, height: h) : null;
+    }
+    // 'VP8L'
+    if (c0 == 0x56 && c1 == 0x50 && c2 == 0x38 && c3 == 0x4C) {
+      if (bytes[20] != 0x2F) return null;
+      final bits = data.getUint32(21, Endian.little);
+      final w = (bits & 0x3FFF) + 1;
+      final h = ((bits >> 14) & 0x3FFF) + 1;
+      return (w > 0 && h > 0) ? (width: w, height: h) : null;
+    }
+    // 'VP8X'
+    if (c0 == 0x56 && c1 == 0x50 && c2 == 0x38 && c3 == 0x58) {
+      if (bytes.length < 30) return null;
+      final w = 1 + (bytes[24] | (bytes[25] << 8) | (bytes[26] << 16));
+      final h = 1 + (bytes[27] | (bytes[28] << 8) | (bytes[29] << 16));
+      return (w > 0 && h > 0) ? (width: w, height: h) : null;
+    }
+    return null;
+  }
+
+  // JPEG: SOI (0xFFD8) followed by marker segments until SOF0..SOF15.
+  if (bytes[0] == 0xFF && bytes[1] == 0xD8) {
+    var offset = 2;
+    var swapForExif = false;
+    while (offset + 4 <= bytes.length) {
+      if (bytes[offset] != 0xFF) return null;
+      while (offset < bytes.length && bytes[offset] == 0xFF) {
+        offset++;
+      }
+      if (offset >= bytes.length) return null;
+      final marker = bytes[offset++];
+      if (marker == 0xD9 || marker == 0xDA) return null;
+      if (marker == 0x00 ||
+          marker == 0x01 ||
+          (marker >= 0xD0 && marker <= 0xD8)) {
+        continue;
+      }
+      if (offset + 2 > bytes.length) return null;
+      final segLen = data.getUint16(offset, Endian.big);
+      if (segLen < 2) return null;
+      if (marker == 0xE1 && offset + segLen <= bytes.length) {
+        final orient = _readJpegExifOrientation(bytes, offset + 2, segLen - 2);
+        if (orient != null && orient >= 5 && orient <= 8) {
+          swapForExif = true;
+        }
+      }
+      final isSof =
+          (marker >= 0xC0 && marker <= 0xC3) ||
+          (marker >= 0xC5 && marker <= 0xC7) ||
+          (marker >= 0xC9 && marker <= 0xCB) ||
+          (marker >= 0xCD && marker <= 0xCF);
+      if (isSof) {
+        if (offset + 7 > bytes.length) return null;
+        final h = data.getUint16(offset + 3, Endian.big);
+        final w = data.getUint16(offset + 5, Endian.big);
+        if (w <= 0 || h <= 0) return null;
+        return swapForExif ? (width: h, height: w) : (width: w, height: h);
+      }
+      offset += segLen;
+    }
+  }
+  return null;
+}
+
+int? _readJpegExifOrientation(Uint8List bytes, int start, int length) {
+  if (length < 14 || start + length > bytes.length) return null;
+  // "Exif\0\0"
+  if (bytes[start] != 0x45 ||
+      bytes[start + 1] != 0x78 ||
+      bytes[start + 2] != 0x69 ||
+      bytes[start + 3] != 0x66 ||
+      bytes[start + 4] != 0x00 ||
+      bytes[start + 5] != 0x00) {
+    return null;
+  }
+  final tiff = start + 6;
+  final data = ByteData.sublistView(bytes);
+  final little = bytes[tiff] == 0x49 && bytes[tiff + 1] == 0x49;
+  final big = bytes[tiff] == 0x4D && bytes[tiff + 1] == 0x4D;
+  if (!little && !big) return null;
+  final endian = little ? Endian.little : Endian.big;
+  if (data.getUint16(tiff + 2, endian) != 42) return null;
+  final ifdOffset = data.getUint32(tiff + 4, endian);
+  final ifd = tiff + ifdOffset;
+  if (ifd < tiff || ifd + 2 > start + length) return null;
+  final count = data.getUint16(ifd, endian);
+  var entryPos = ifd + 2;
+  for (var i = 0; i < count; i++) {
+    if (entryPos + 12 > start + length) return null;
+    if (data.getUint16(entryPos, endian) == 0x0112) {
+      return data.getUint16(entryPos + 8, endian);
+    }
+    entryPos += 12;
+  }
+  return null;
+}
+
+/// Probes image dimensions for an indexed ZIP entry by reading only the leading
+/// header slice on Store entries (16 KiB -> 64 KiB), avoiding full-file I/O.
+({int width, int height})? probeIndexedLocalBookImageSize(
+  RandomAccessFile raf,
+  LocalBookZipEntryIndex entry, {
+  int maxEntryBytes = 40 * 1024 * 1024,
+}) {
+  if (entry.isDirectory ||
+      entry.isSymbolicLink ||
+      entry.uncompressedSize <= 0 ||
+      entry.uncompressedSize > maxEntryBytes) {
+    return null;
+  }
+  var dataStart = entry.dataOffset;
+  if (dataStart == null) {
+    raf.setPositionSync(entry.localHeaderOffset);
+    final headerBytes = raf.readSync(30);
+    if (headerBytes.length < 30) return null;
+    final header = ByteData.sublistView(headerBytes);
+    if (header.getUint32(0, Endian.little) != ZipFile.zipSignature) return null;
+    final nameLength = header.getUint16(26, Endian.little);
+    final extraLength = header.getUint16(28, Endian.little);
+    dataStart = entry.localHeaderOffset + 30 + nameLength + extraLength;
+    entry.dataOffset = dataStart;
+  }
+
+  if (entry.compressionMethod == 0) {
+    for (final cap in const [16384, 65536]) {
+      final toRead = entry.compressedSize < cap ? entry.compressedSize : cap;
+      raf.setPositionSync(dataStart);
+      final slice = raf.readSync(toRead);
+      final dims = probeImageDimensionsFromHeader(slice);
+      if (dims != null || toRead == entry.compressedSize) return dims;
+    }
+    return null;
+  }
+
+  if (entry.compressionMethod == 8) {
+    raf.setPositionSync(dataStart);
+    final compressed = raf.readSync(entry.compressedSize);
+    if (compressed.length != entry.compressedSize) return null;
+    final inflated = ZLibDecoder(raw: true).convert(compressed);
+    final bytes =
+        inflated is Uint8List ? inflated : Uint8List.fromList(inflated);
+    return probeImageDimensionsFromHeader(bytes);
+  }
+  return null;
+}
