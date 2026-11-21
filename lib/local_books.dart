@@ -2270,6 +2270,16 @@ class LocalBookStore extends ChangeNotifier
             ), debugLabel: 'local-epub-image-batch'),
           )
         : null;
+    LocalBookMedia.externalImageSizes = (id, names) => _directOriginal(id)
+        ? _withOriginalInput(
+          id,
+      (input) => compute(probeLocalEpubImageSizesFromInput, (
+          directory: '${directory.path}/$id',
+        names: names,
+        original: input,
+      ), debugLabel: 'local-epub-image-sizes'),
+      )
+      : null;
     _epubLayouts
       ..clear()
       ..addAll(loaded.epubLayouts);
