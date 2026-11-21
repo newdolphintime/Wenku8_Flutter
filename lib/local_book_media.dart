@@ -1,8 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show compute, visibleForTesting;
-import 'local_document_input.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'local_epub_media.dart';
 import 'local_book_import_issues.dart';
 
@@ -29,6 +28,7 @@ class LocalBookMedia {
     _coverBytes = 0;
     externalImages = null;
     importWarnings = null;
+    LocalEpubMediaWorker.shared.evictAll();
   }
 
   /// Bound to the active store, like the existing operation-scoped media reader.
@@ -80,6 +80,9 @@ class LocalBookMedia {
     }
     _coverPending.removeWhere((url, _) => belongs(url));
     _pending.removeWhere((url, _) => belongs(url));
+    if (_root case final dir?) {
+      LocalEpubMediaWorker.shared.evictDirectory('${dir.path}/$bookId');
+    }
   }
 
   static bool valid(Uri uri) =>
@@ -199,7 +202,7 @@ class LocalBookMedia {
             missingNames.add(name);
             return;
           }
-          if (await file.length() > 8 * 1024 * 1024) {
+          if (await file.length() > maxLocalEpubImageBytes) {
             result[name] = const LocalBookImageResult.failure('本地插图过大');
           } else {
             result[name] = LocalBookImageResult.success(
@@ -243,11 +246,7 @@ class LocalBookMedia {
     if (archived.isNotEmpty) {
       try {
         result.addAll(
-          await compute(readLocalEpubImagesFromInput, (
-            directory: directory,
-            names: archived,
-            original: LocalDocumentInput.file('$directory/original'),
-          )),
+          await LocalEpubMediaWorker.shared.readImages(directory, archived),
         );
       } catch (error, stack) {
         for (final name in archived) {
@@ -319,17 +318,17 @@ class LocalBookMedia {
     final file = File('$directory${uri.path}');
     final Uint8List bytes;
     if (await file.exists()) {
-      if (await file.length() > 8 * 1024 * 1024) {
+      if (await file.length() > maxLocalEpubImageBytes) {
         throw const FormatException('本地插图过大');
       }
       bytes = await file.readAsBytes();
     } else {
       bytes =
           await (reader?.call(int.parse(uri.host), uri.path.substring(1)) ??
-              compute(readLocalEpubImage, (
-                directory: directory,
-                name: uri.path.substring(1),
-              )));
+              LocalEpubMediaWorker.shared.readImage(
+                directory,
+                uri.path.substring(1),
+              ));
     }
     return bytes;
   }
