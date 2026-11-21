@@ -199,18 +199,22 @@ class ReaderIllustrationCache {
     return _rememberSize(url, await request.future, request.source);
   }
 
+  void _storeDimension(String url, Size size, _IllustrationSource source) {
+    if (_current(url, source)) {
+      if (_dimensions.length >= 8192 && !_dimensions.containsKey(url)) {
+        _dimensions.remove(_dimensions.keys.first);
+      }
+      _dimensions[url] = (size: size, source: source);
+    }
+  }
+
   Future<Size> _rememberSize(
     String url,
     Uint8List bytes,
     _IllustrationSource source,
   ) async {
     final size = await _size(bytes);
-    if (_current(url, source)) {
-      if (_dimensions.length >= 256 && !_dimensions.containsKey(url)) {
-        _dimensions.remove(_dimensions.keys.first);
-      }
-      _dimensions[url] = (size: size, source: source);
-    }
+    _storeDimension(url, size, source);
     return size;
   }
 
@@ -230,8 +234,46 @@ class ReaderIllustrationCache {
     }
     final ordered = [...preferred, ...local];
     final result = <String, Size>{};
-    for (var start = 0; start < ordered.length && current(); start += 4) {
-      final batch = ordered.skip(start).take(4).toList();
+    final toProbe = <String>[];
+    final priorityKeep = retainPriority && preferred.isNotEmpty
+        ? preferred.first
+        : null;
+    for (final url in ordered) {
+      if (sizeOf(url) case final known?) {
+        result[url] = known;
+        continue;
+      }
+      if (url != priorityKeep &&
+          peek(url) == null &&
+          _pendingFor(url) == null) {
+        toProbe.add(url);
+      }
+    }
+    if (toProbe.isNotEmpty && current()) {
+      final epoch = _epoch;
+      final probed = await LocalBookMedia.probeSizes(toProbe);
+      if (current() && _epoch == epoch) {
+        for (final entry in probed.entries) {
+          final size = Size(
+            entry.value.width.toDouble(),
+            entry.value.height.toDouble(),
+          );
+          if (size.isEmpty) continue;
+          result[entry.key] = size;
+          _storeDimension(
+            entry.key,
+            size,
+            _IllustrationSource(epoch, _revision(entry.key), retain: false),
+          );
+        }
+      }
+    }
+    final remaining = [
+      for (final url in ordered)
+        if (!result.containsKey(url)) url,
+    ];
+    for (var start = 0; start < remaining.length && current(); start += 4) {
+      final batch = remaining.skip(start).take(4).toList();
       final reads = LocalBookMedia.loadBatch([
         for (final url in batch)
           if (sizeOf(url) == null &&
