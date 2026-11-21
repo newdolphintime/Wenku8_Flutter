@@ -884,13 +884,378 @@ int? _readJpegExifOrientation(Uint8List bytes, int start, int length) {
   }
 
   if (entry.compressionMethod == 8) {
-    raf.setPositionSync(dataStart);
-    final compressed = raf.readSync(entry.compressedSize);
-    if (compressed.length != entry.compressedSize) return null;
-    final inflated = ZLibDecoder(raw: true).convert(compressed);
-    final bytes =
-        inflated is Uint8List ? inflated : Uint8List.fromList(inflated);
-    return probeImageDimensionsFromHeader(bytes);
+    final prefix = _inflateHeaderPrefixFromRaf(
+      raf,
+      dataStart,
+      entry.compressedSize,
+    );
+    return prefix == null ? null : probeImageDimensionsFromHeader(prefix);
+  }
+  return null;
+}
+class _LimitedBytesSink implements Sink<List<int>> {
+  _LimitedBytesSink(this.limit);
+
+  final int limit;
+  final BytesBuilder _builder = BytesBuilder(copy: false);
+
+  int get length => _builder.length;
+
+  @override
+  void add(List<int> data) {
+    final remaining = limit - _builder.length;
+    if (remaining <= 0) return;
+    if (data.length <= remaining) {
+      _builder.add(data);
+    } else {
+      _builder.add(data.sublist(0, remaining));
+    }
+  }
+
+  @override
+  void close() {}
+
+  Uint8List takeBytes() => _builder.takeBytes();
+}
+
+Uint8List? _inflateHeaderPrefixFromRaf(
+  RandomAccessFile raf,
+  int dataStart,
+  int compressedSize, {
+  int maxOutBytes = 65536,
+}) {
+  final out = _LimitedBytesSink(maxOutBytes);
+  final decoder = ZLibDecoder(raw: true).startChunkedConversion(out);
+  var offset = 0;
+  const chunkSize = 8192;
+  try {
+    while (offset < compressedSize && out.length < maxOutBytes) {
+      final toRead = (compressedSize - offset) < chunkSize
+          ? (compressedSize - offset)
+          : chunkSize;
+      raf.setPositionSync(dataStart + offset);
+      final chunk = raf.readSync(toRead);
+      if (chunk.isEmpty) break;
+      decoder.add(chunk);
+      offset += chunk.length;
+      if (out.length >= 16384) {
+        // Early check after 16 KiB inflated (sufficient for PNG/GIF/WebP/most JPEGs).
+        final snapshot = out.takeBytes();
+        if (probeImageDimensionsFromHeader(snapshot) != null) {
+          return snapshot;
+        }
+        // Re-add snapshot so subsequent chunks continue accumulating.
+        out.add(snapshot);
+      }
+    }
+  } catch (_) {
+    // Truncated stream after hitting maxOutBytes is expected.
+  }
+  return out.length > 0 ? out.takeBytes() : null;
+}
+
+Uint8List? _inflateHeaderPrefixFromStream(
+  InputStream input,
+  int dataStart,
+  int compressedSize, {
+  int maxOutBytes = 65536,
+}) {
+  final out = _LimitedBytesSink(maxOutBytes);
+  final decoder = ZLibDecoder(raw: true).startChunkedConversion(out);
+  var offset = 0;
+  const chunkSize = 8192;
+  try {
+    while (offset < compressedSize && out.length < maxOutBytes) {
+      final toRead = (compressedSize - offset) < chunkSize
+          ? (compressedSize - offset)
+          : chunkSize;
+      final chunk = input
+          .subset(position: dataStart + offset, length: toRead)
+          .toUint8List();
+      if (chunk.isEmpty) break;
+      decoder.add(chunk);
+      offset += chunk.length;
+      if (out.length >= 16384) {
+        final snapshot = out.takeBytes();
+        if (probeImageDimensionsFromHeader(snapshot) != null) {
+          return snapshot;
+        }
+        out.add(snapshot);
+      }
+    }
+  } catch (_) {
+    // Truncated stream after hitting maxOutBytes is expected.
+  }
+  return out.length > 0 ? out.takeBytes() : null;
+}
+/// Parses ONLY the ZIP/ZIP64 central directory from an [InputStream] in O(1)
+/// without visiting every local file header (for direct/SAF EPUB inputs).
+Map<String, LocalBookZipEntryIndex> indexLocalBookArchiveFromStream(
+  InputStream input, {
+  int maxEntries = 65535,
+}) {
+  final fileLength = input.totalLength;
+  if (fileLength < 22) {
+    throw _damagedArchive(null, '压缩文件不完整，请重新下载原书');
+  }
+  final tailStart = fileLength > 65557 ? fileLength - 65557 : 0;
+  final tail = input.subset(position: tailStart).toUint8List();
+  if (tail.length < 22) throw _damagedArchive();
+  final tailView = ByteData.sublistView(tail);
+
+  var eocd = -1;
+  for (var at = tail.length - 22; at >= 0; at--) {
+    if (tailView.getUint32(at, Endian.little) == ZipDirectory.eocdSignature &&
+        at + 22 + tailView.getUint16(at + 20, Endian.little) == tail.length) {
+      eocd = tailStart + at;
+      break;
+    }
+  }
+  if (eocd < 0) throw _damagedArchive();
+
+  final localEocdOffset = eocd - tailStart;
+  var diskNumber = tailView.getUint16(localEocdOffset + 4, Endian.little);
+  var cdDisk = tailView.getUint16(localEocdOffset + 6, Endian.little);
+  var diskEntries = tailView.getUint16(localEocdOffset + 8, Endian.little);
+  var totalEntries = tailView.getUint16(localEocdOffset + 10, Endian.little);
+  var cdSize = tailView.getUint32(localEocdOffset + 12, Endian.little);
+  var cdOffset = tailView.getUint32(localEocdOffset + 16, Endian.little);
+
+  if (eocd >= 20) {
+    final locatorBytes = input
+        .subset(position: eocd - 20, length: 20)
+        .toUint8List();
+    if (locatorBytes.length == 20) {
+      final loc = ByteData.sublistView(locatorBytes);
+      if (loc.getUint32(0, Endian.little) ==
+          ZipDirectory.zip64EocdLocatorSignature) {
+        final zip64Disk = loc.getUint32(4, Endian.little);
+        final zip64Offset = loc.getUint64(8, Endian.little);
+        final totalDisks = loc.getUint32(16, Endian.little);
+        if (zip64Disk != 0 ||
+            totalDisks != 1 ||
+            zip64Offset < 0 ||
+            zip64Offset + 56 > eocd - 20) {
+          throw _damagedArchive();
+        }
+        final z64Bytes = input
+            .subset(position: zip64Offset, length: 56)
+            .toUint8List();
+        if (z64Bytes.length < 56) throw _damagedArchive();
+        final z64 = ByteData.sublistView(z64Bytes);
+        if (z64.getUint32(0, Endian.little) != ZipDirectory.zip64EocdSignature ||
+            z64.getUint64(4, Endian.little) < 44) {
+          throw _damagedArchive();
+        }
+        diskNumber = z64.getUint32(16, Endian.little);
+        cdDisk = z64.getUint32(20, Endian.little);
+        diskEntries = z64.getUint64(24, Endian.little);
+        totalEntries = z64.getUint64(32, Endian.little);
+        cdSize = z64.getUint64(40, Endian.little);
+        cdOffset = z64.getUint64(48, Endian.little);
+      }
+    }
+  }
+
+  if (diskNumber != 0 ||
+      cdDisk != 0 ||
+      diskEntries != totalEntries ||
+      totalEntries <= 0 ||
+      totalEntries > maxEntries ||
+      cdOffset < 0 ||
+      cdSize <= 0 ||
+      cdOffset + cdSize > eocd) {
+    throw _damagedArchive();
+  }
+
+  final cdBytes = input.subset(position: cdOffset, length: cdSize).toUint8List();
+  if (cdBytes.length != cdSize) throw _damagedArchive();
+  final cd = ByteData.sublistView(cdBytes);
+
+  final entries = <String, LocalBookZipEntryIndex>{};
+  var pos = 0;
+  for (var i = 0; i < totalEntries; i++) {
+    if (pos + 46 > cdBytes.length) throw _damagedArchive();
+    if (cd.getUint32(pos, Endian.little) != ZipFileHeader.signature) {
+      throw _damagedArchive();
+    }
+    final flags = cd.getUint16(pos + 8, Endian.little);
+    final method = cd.getUint16(pos + 10, Endian.little);
+    final crc32 = cd.getUint32(pos + 16, Endian.little);
+    var compressedSize = cd.getUint32(pos + 20, Endian.little);
+    var uncompressedSize = cd.getUint32(pos + 24, Endian.little);
+    final nameLength = cd.getUint16(pos + 28, Endian.little);
+    final extraLength = cd.getUint16(pos + 30, Endian.little);
+    final commentLength = cd.getUint16(pos + 32, Endian.little);
+    var entryDisk = cd.getUint16(pos + 34, Endian.little);
+    final externalAttrs = cd.getUint32(pos + 38, Endian.little);
+    var localHeaderOffset = cd.getUint32(pos + 42, Endian.little);
+
+    final recordEnd = pos + 46 + nameLength + extraLength + commentLength;
+    if (recordEnd > cdBytes.length) throw _damagedArchive();
+
+    final nameStart = pos + 46;
+    final nameBytes = Uint8List.sublistView(
+      cdBytes,
+      nameStart,
+      nameStart + nameLength,
+    );
+    final filename = utf8.decode(nameBytes, allowMalformed: true);
+
+    if (extraLength >= 4 &&
+        (uncompressedSize == 0xffffffff ||
+            compressedSize == 0xffffffff ||
+            localHeaderOffset == 0xffffffff ||
+            entryDisk == 0xffff)) {
+      var extraPos = nameStart + nameLength;
+      final extraEnd = extraPos + extraLength;
+      while (extraPos + 4 <= extraEnd) {
+        final headerId = cd.getUint16(extraPos, Endian.little);
+        final dataSize = cd.getUint16(extraPos + 2, Endian.little);
+        final dataStart = extraPos + 4;
+        if (dataStart + dataSize > extraEnd) break;
+        if (headerId == 0x0001) {
+          var fieldPos = dataStart;
+          if (uncompressedSize == 0xffffffff &&
+              fieldPos + 8 <= dataStart + dataSize) {
+            uncompressedSize = cd.getUint64(fieldPos, Endian.little);
+            fieldPos += 8;
+          }
+          if (compressedSize == 0xffffffff &&
+              fieldPos + 8 <= dataStart + dataSize) {
+            compressedSize = cd.getUint64(fieldPos, Endian.little);
+            fieldPos += 8;
+          }
+          if (localHeaderOffset == 0xffffffff &&
+              fieldPos + 8 <= dataStart + dataSize) {
+            localHeaderOffset = cd.getUint64(fieldPos, Endian.little);
+            fieldPos += 8;
+          }
+          if (entryDisk == 0xffff && fieldPos + 4 <= dataStart + dataSize) {
+            entryDisk = cd.getUint32(fieldPos, Endian.little);
+          }
+          break;
+        }
+        extraPos = dataStart + dataSize;
+      }
+    }
+
+    pos = recordEnd;
+    if (entryDisk != 0 ||
+        flags & 1 != 0 ||
+        _unsupportedPath(filename) ||
+        compressedSize < 0 ||
+        uncompressedSize < 0 ||
+        localHeaderOffset < 0 ||
+        localHeaderOffset >= cdOffset) {
+      continue;
+    }
+
+    entries[filename] = LocalBookZipEntryIndex(
+      filename: filename,
+      localHeaderOffset: localHeaderOffset,
+      compressedSize: compressedSize,
+      uncompressedSize: uncompressedSize,
+      compressionMethod: method,
+      crc32: crc32,
+      generalPurposeBitFlag: flags,
+      isSymbolicLink: ((externalAttrs >> 16) & 0xf000) == 0xa000,
+    );
+  }
+  return entries;
+}
+int? _resolveDataStartFromStream(
+  InputStream input,
+  LocalBookZipEntryIndex entry,
+) {
+  if (entry.dataOffset case final cached?) return cached;
+  final headerBytes = input
+      .subset(position: entry.localHeaderOffset, length: 30)
+      .toUint8List();
+  if (headerBytes.length < 30) return null;
+  final header = ByteData.sublistView(headerBytes);
+  if (header.getUint32(0, Endian.little) != ZipFile.zipSignature) return null;
+  final nameLength = header.getUint16(26, Endian.little);
+  final extraLength = header.getUint16(28, Endian.little);
+  final dataStart = entry.localHeaderOffset + 30 + nameLength + extraLength;
+  entry.dataOffset = dataStart;
+  return dataStart;
+}
+
+/// Reads an indexed entry directly from [InputStream] with Store/native ZLib.
+Uint8List readIndexedLocalBookEntryFromStream(
+  InputStream input,
+  LocalBookZipEntryIndex entry, {
+  bool verifyCrc = false,
+  int maxEntryBytes = 40 * 1024 * 1024,
+}) {
+  if (entry.isDirectory || entry.isSymbolicLink) {
+    throw _damagedArchive(entry.filename, '不支持读取目录或符号链接');
+  }
+  if (entry.uncompressedSize > maxEntryBytes) {
+    throw FormatException('压缩包条目超过大小限制：${entry.filename}');
+  }
+  final dataStart = _resolveDataStartFromStream(input, entry);
+  if (dataStart == null) {
+    throw _damagedArchive(entry.filename, 'ZIP 本地文件头损坏');
+  }
+  final compressed = input
+      .subset(position: dataStart, length: entry.compressedSize)
+      .toUint8List();
+  if (compressed.length != entry.compressedSize) {
+    throw _damagedArchive(entry.filename, '压缩内容不完整');
+  }
+  final Uint8List bytes;
+  switch (entry.compressionMethod) {
+    case 0:
+      bytes = Uint8List.fromList(compressed);
+    case 8:
+      final inflated = ZLibDecoder(raw: true).convert(compressed);
+      bytes = inflated is Uint8List ? inflated : Uint8List.fromList(inflated);
+    default:
+      throw UnsupportedError('Unsupported ZIP method ${entry.compressionMethod}');
+  }
+  if (bytes.length != entry.uncompressedSize) {
+    throw _damagedArchive(entry.filename, '展开后的大小与 ZIP 目录不一致');
+  }
+  if (verifyCrc && getCrc32(bytes) != entry.crc32) {
+    throw _damagedArchive(entry.filename, '内容 CRC 校验不一致');
+  }
+  return bytes;
+}
+
+/// Header-only dimension probe on an [InputStream] indexed ZIP entry.
+({int width, int height})? probeIndexedLocalBookImageSizeFromStream(
+  InputStream input,
+  LocalBookZipEntryIndex entry, {
+  int maxEntryBytes = 40 * 1024 * 1024,
+}) {
+  if (entry.isDirectory ||
+      entry.isSymbolicLink ||
+      entry.uncompressedSize <= 0 ||
+      entry.uncompressedSize > maxEntryBytes) {
+    return null;
+  }
+  final dataStart = _resolveDataStartFromStream(input, entry);
+  if (dataStart == null) return null;
+  if (entry.compressionMethod == 0) {
+    for (final cap in const [16384, 65536]) {
+      final toRead = entry.compressedSize < cap ? entry.compressedSize : cap;
+      final slice = input
+          .subset(position: dataStart, length: toRead)
+          .toUint8List();
+      final dims = probeImageDimensionsFromHeader(slice);
+      if (dims != null || toRead == entry.compressedSize) return dims;
+    }
+    return null;
+  }
+  if (entry.compressionMethod == 8) {
+    final prefix = _inflateHeaderPrefixFromStream(
+      input,
+      dataStart,
+      entry.compressedSize,
+    );
+    return prefix == null ? null : probeImageDimensionsFromHeader(prefix);
   }
   return null;
 }
