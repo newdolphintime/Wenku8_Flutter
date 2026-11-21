@@ -104,7 +104,43 @@ class LocalBookMedia {
     }
     return _loadSource(source);
   }
-
+  /// Fast header-only dimension probe for local EPUB images. Returns only
+  /// entries whose headers were parsed cleanly; callers fall back to [loadBatch]
+  /// for any missing entries or when an external store is bound.
+    static Future<Map<String, ({int width, int height})>> probeSizes(
+      Iterable<String> sources,
+  ) async {
+    final directory = root;
+    if (directory == null || externalImages != null || externalImage != null) {
+      return const {};
+    }
+    final groups = <int, Map<String, String>>{};
+    for (final source in sources.toSet()) {
+      final uri = Uri.tryParse(source);
+      if (uri == null || !valid(uri)) continue;
+      final bookId = int.parse(uri.host);
+      (groups[bookId] ??= {})[uri.path.substring(1)] = source;
+    }
+    if (groups.isEmpty) return const {};
+    final result = <String, ({int width, int height})>{};
+    await Future.wait(
+      groups.entries.map((group) async {
+        try {
+          final probed = await LocalEpubMediaWorker.shared.probeImageSizes(
+            '${directory.path}/${group.key}',
+            group.value.keys.toList(),
+          );
+          for (final entry in probed.entries) {
+            final url = group.value[entry.key];
+            if (url != null) result[url] = entry.value;
+          }
+        } catch (_) {
+          // Fall back silently to full-image loadBatch when probing fails.
+        }
+      }),
+    );
+    return result;
+}
   /// Coalesces single-image and batch readers. At most four same-book archive
   /// misses share one worker/lease; a broken image fails only its own future.
   static Map<String, Future<Uint8List>> loadBatch(Iterable<String> sources) {
