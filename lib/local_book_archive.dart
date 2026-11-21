@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:io' as io;
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
@@ -674,7 +675,7 @@ Uint8List readIndexedLocalBookEntry(
     case 0:
       bytes = compressed;
     case 8:
-      final inflated = ZLibDecoder(raw: true).convert(compressed);
+      final inflated = io.ZLibDecoder(raw: true).convert(compressed);
       bytes = inflated is Uint8List ? inflated : Uint8List.fromList(inflated);
     default:
       throw UnsupportedError('Unsupported ZIP method ${entry.compressionMethod}');
@@ -925,7 +926,7 @@ Uint8List? _inflateHeaderPrefixFromRaf(
   int maxOutBytes = 65536,
 }) {
   final out = _LimitedBytesSink(maxOutBytes);
-  final decoder = ZLibDecoder(raw: true).startChunkedConversion(out);
+  final decoder = io.ZLibDecoder(raw: true).startChunkedConversion(out);
   var offset = 0;
   const chunkSize = 8192;
   try {
@@ -961,7 +962,7 @@ Uint8List? _inflateHeaderPrefixFromStream(
   int maxOutBytes = 65536,
 }) {
   final out = _LimitedBytesSink(maxOutBytes);
-  final decoder = ZLibDecoder(raw: true).startChunkedConversion(out);
+  final decoder = io.ZLibDecoder(raw: true).startChunkedConversion(out);
   var offset = 0;
   const chunkSize = 8192;
   try {
@@ -1210,7 +1211,7 @@ Uint8List readIndexedLocalBookEntryFromStream(
     case 0:
       bytes = Uint8List.fromList(compressed);
     case 8:
-      final inflated = ZLibDecoder(raw: true).convert(compressed);
+      final inflated = io.ZLibDecoder(raw: true).convert(compressed);
       bytes = inflated is Uint8List ? inflated : Uint8List.fromList(inflated);
     default:
       throw UnsupportedError('Unsupported ZIP method ${entry.compressionMethod}');
