@@ -27,6 +27,7 @@ class LocalBookMedia {
     _pending.clear();
     _coverBytes = 0;
     externalImages = null;
+    externalImageSizes = null;
     importWarnings = null;
     LocalEpubMediaWorker.shared.evictAll();
   }
@@ -43,6 +44,13 @@ class LocalBookMedia {
     List<String> names,
   )?
   externalImages;
+  /// Optional batch header-only dimension probe for direct/external original
+  /// inputs. Returning null for a book falls through to [LocalEpubMediaWorker].
+  static Future<Map<String, ({int width, int height})>>? Function(
+    int id,
+    List<String> names,
+  )?
+  externalImageSizes;
   static final _pending = <String, Future<Uint8List>>{};
   static const _maxCoverBytes = 8 * 1024 * 1024;
   static const _maxCoverEntries = 256;
@@ -106,14 +114,13 @@ class LocalBookMedia {
   }
   /// Fast header-only dimension probe for local EPUB images. Returns only
   /// entries whose headers were parsed cleanly; callers fall back to [loadBatch]
-  /// for any missing entries or when an external store is bound.
+  /// for any missing entries.
     static Future<Map<String, ({int width, int height})>> probeSizes(
       Iterable<String> sources,
   ) async {
     final directory = root;
-    if (directory == null || externalImages != null || externalImage != null) {
-      return const {};
-    }
+    if (directory == null) return const {};
+    final sizeReader = externalImageSizes;  
     final groups = <int, Map<String, String>>{};
     for (final source in sources.toSet()) {
       final uri = Uri.tryParse(source);
@@ -126,10 +133,14 @@ class LocalBookMedia {
     await Future.wait(
       groups.entries.map((group) async {
         try {
-          final probed = await LocalEpubMediaWorker.shared.probeImageSizes(
-            '${directory.path}/${group.key}',
-            group.value.keys.toList(),
-          );
+          final names = group.value.keys.toList();
+          final external = sizeReader?.call(group.key, names);
+          final probed = external != null
+            ? await external
+            : await LocalEpubMediaWorker.shared.probeImageSizes(
+                '${directory.path}/${group.key}',
+              names,
+              );
           for (final entry in probed.entries) {
             final url = group.value[entry.key];
             if (url != null) result[url] = entry.value;
