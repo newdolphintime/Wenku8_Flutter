@@ -485,9 +485,22 @@ class _WorkerBookSession {
   }
 
   Map<String, List<int>> probeSizes(List<String> names) {
+    final cached = _readCachedMediaSizes(directory, indexModifiedMs);
     final result = <String, List<int>>{};
-    if (recoverDamagedEpub || raf == null || zipIndex == null) return result;
+    final missing = <String>[];
     for (final name in names) {
+      final hit = cached[name];
+      if (hit != null) {
+        result[name] = hit;
+      } else {
+        missing.add(name);
+      }
+    }
+    if (missing.isEmpty || recoverDamagedEpub || raf == null || zipIndex == null) {
+      return result;
+    }
+    var dirty = false;
+    for (final name in missing) {
       final path = mediaEntries[name];
       if (path == null) continue;
       final zipEntry = zipIndex![path];
@@ -499,11 +512,17 @@ class _WorkerBookSession {
           maxEntryBytes: maxLocalEpubImageBytes,
         );
         if (dims != null) {
-          result[name] = [dims.width, dims.height];
+          final pair = [dims.width, dims.height];
+          result[name] = pair;
+          cached[name] = pair;
+          dirty = true;
         }
       } catch (_) {
         // Leave unprobed so caller can fall back to full decoding if needed.
       }
+    }
+    if (dirty) {
+      _writeCachedMediaSizes(directory, indexModifiedMs, cached);
     }
     return result;
   }
@@ -578,40 +597,78 @@ Map<String, LocalBookImageResult> readLocalEpubImagesFromInput(
   if (paths.isEmpty) return results;
   final buffer = request.original.open();
   try {
-    final archive = value['recoverDamagedEpub'] == true
-        ? readLocalBookArchiveForRecovery(
-            buffer.stream,
-            maxSize: maxExpandedLocalEpubBytes,
-            allowLargeMedia: true,
-          ).archive
-        : readLocalBookArchive(
-            buffer.stream,
-            maxSize: maxExpandedLocalEpubBytes,
-            allowLargeMedia: true,
-          );
-    for (final entry in paths.entries) {
-      final name = entry.key, path = entry.value;
-      try {
-        final image = archive.findFile(path);
-        if (image == null ||
-            !image.isFile ||
-            image.size > maxLocalEpubImageBytes) {
+    final recover = value['recoverDamagedEpub'] == true;
+    final fallbackPaths = <String, String>{};
+    if (!recover) {
+      final zipIndex = indexLocalBookArchiveFromStream(buffer.stream);
+      for (final entry in paths.entries) {
+        final name = entry.key, path = entry.value;
+        final zipEntry = zipIndex[path];
+        if (zipEntry == null ||
+            zipEntry.isDirectory ||
+            zipEntry.uncompressedSize > maxLocalEpubImageBytes) {
           results[name] = LocalBookImageResult.failure(
             '原书插图无效或超过 ${maxLocalEpubImageBytes ~/ (1024 * 1024)} MiB',
           );
           continue;
         }
-        // Stored ZIP entries can be views into the leased mapping.
-        final bytes = readLocalBookArchiveEntry(image, verifyCrc: false);
-        results[name] = LocalBookImageResult.success(Uint8List.fromList(bytes));
-      } on ArchiveException {
-        results[name] = const LocalBookImageResult.failure(
-          '原书插图无法读取，请重新导入完整原书',
-        );
-      } on FormatException {
-        results[name] = const LocalBookImageResult.failure(
-          '原书插图无法读取，请重新导入完整原书',
-        );
+        try {
+          final bytes = readIndexedLocalBookEntryFromStream(
+            buffer.stream,
+            zipEntry,
+            verifyCrc: false,
+            maxEntryBytes: maxLocalEpubImageBytes,
+          );
+          results[name] = LocalBookImageResult.success(bytes);
+        } on UnsupportedError {
+          fallbackPaths[name] = path;
+        } on FormatException {
+          results[name] = const LocalBookImageResult.failure(
+            '原书插图无法读取，请重新导入完整原书',
+          );
+        }
+      }
+    } else {
+      fallbackPaths.addAll(paths);
+    }
+    if (fallbackPaths.isNotEmpty) {
+      buffer.stream.setPosition(0);
+      final archive = recover
+          ? readLocalBookArchiveForRecovery(
+              buffer.stream,
+              maxSize: maxExpandedLocalEpubBytes,
+              allowLargeMedia: true,
+            ).archive
+          : readLocalBookArchive(
+              buffer.stream,
+              maxSize: maxExpandedLocalEpubBytes,
+              allowLargeMedia: true,
+            );
+      for (final entry in fallbackPaths.entries) {
+        final name = entry.key, path = entry.value;
+        try {
+          final image = archive.findFile(path);
+          if (image == null ||
+              !image.isFile ||
+              image.size > maxLocalEpubImageBytes) {
+            results[name] = LocalBookImageResult.failure(
+              '原书插图无效或超过 ${maxLocalEpubImageBytes ~/ (1024 * 1024)} MiB',
+            );
+            continue;
+          }
+          final bytes = readLocalBookArchiveEntry(image, verifyCrc: false);
+          results[name] = LocalBookImageResult.success(
+            Uint8List.fromList(bytes),
+          );
+        } on ArchiveException {
+          results[name] = const LocalBookImageResult.failure(
+            '原书插图无法读取，请重新导入完整原书',
+          );
+        } on FormatException {
+          results[name] = const LocalBookImageResult.failure(
+            '原书插图无法读取，请重新导入完整原书',
+          );
+        }
       }
     }
     return results;
@@ -642,5 +699,133 @@ Map<String, LocalBookImageResult> readLocalEpubImagesFromInput(
     try {
       raf?.closeSync();
     } catch (_) {}
+  }
+}
+/// Probes dimensions for an entire chapter's local images from a direct/SAF
+/// [LocalDocumentInput] in a single central-directory open, with persistent
+/// disk caching in `media_sizes.json`.
+Map<String, ({int width, int height})> probeLocalEpubImageSizesFromInput(
+  ({String directory, List<String> names, LocalDocumentInput original}) request,
+) {
+  if (request.names.isEmpty) return {};
+  final indexFile = File('${request.directory}/media.json');
+  final indexStat = indexFile.statSync();
+  if (indexStat.type == FileSystemEntityType.notFound ||
+      indexStat.size > 4 * 1024 * 1024) {
+    return {};
+  }
+  final indexModifiedMs = indexStat.modified.millisecondsSinceEpoch;
+  final cached = _readCachedMediaSizes(request.directory, indexModifiedMs);
+  final result = <String, ({int width, int height})>{};
+  final missing = <String>[];
+  for (final name in request.names) {
+    final hit = cached[name];
+    if (hit != null) {
+      result[name] = (width: hit[0], height: hit[1]);
+    } else {
+      missing.add(name);
+    }
+  }
+  if (missing.isEmpty) return result;
+
+  final value = jsonDecode(indexFile.readAsStringSync());
+  if (value is! Map ||
+      value['version'] != 1 ||
+      value['entries'] is! Map ||
+      value['recoverDamagedEpub'] == true) {
+    return result;
+  }
+  final entries = value['entries'] as Map;
+  final paths = <String, String>{};
+  for (final name in missing) {
+    final path = entries[name];
+    if (path is String) paths[name] = path;
+  }
+  if (paths.isEmpty) return result;
+
+  final buffer = request.original.open();
+  var dirty = false;
+  try {
+    final zipIndex = indexLocalBookArchiveFromStream(buffer.stream);
+    for (final entry in paths.entries) {
+      final zipEntry = zipIndex[entry.value];
+      if (zipEntry == null) continue;
+      try {
+        final dims = probeIndexedLocalBookImageSizeFromStream(
+          buffer.stream,
+          zipEntry,
+          maxEntryBytes: maxLocalEpubImageBytes,
+        );
+        if (dims != null) {
+          result[entry.key] = dims;
+          cached[entry.key] = [dims.width, dims.height];
+          dirty = true;
+        }
+      } catch (_) {
+        // Leave unprobed for caller fallback.
+      }
+    }
+  } catch (_) {
+    // Return partial probed results; caller falls back for the rest.
+  } finally {
+    buffer.close();
+  }
+  if (dirty) {
+    _writeCachedMediaSizes(request.directory, indexModifiedMs, cached);
+  }
+  return result;
+}
+
+Map<String, List<int>> _readCachedMediaSizes(
+  String directory,
+  int indexModifiedMs,
+) {
+  final result = <String, List<int>>{};
+  try {
+    final file = File('$directory/media_sizes.json');
+    if (!file.existsSync() || file.lengthSync() > 4 * 1024 * 1024) {
+      return result;
+    }
+    final decoded = jsonDecode(file.readAsStringSync());
+    if (decoded is! Map ||
+        decoded['version'] != 1 ||
+        decoded['indexModifiedMs'] != indexModifiedMs ||
+        decoded['sizes'] is! Map) {
+      return result;
+    }
+    for (final entry in (decoded['sizes'] as Map).entries) {
+      final key = entry.key;
+      final val = entry.value;
+      if (key is String && val is List && val.length == 2) {
+        final w = val[0], h = val[1];
+        if (w is int && h is int && w > 0 && h > 0) {
+          result[key] = [w, h];
+        }
+      }
+    }
+  } catch (_) {
+    // Corrupted cache is ignored and regenerated lazily.
+  }
+  return result;
+}
+
+void _writeCachedMediaSizes(
+  String directory,
+  int indexModifiedMs,
+  Map<String, List<int>> sizes,
+) {
+  try {
+    final tmp = File('$directory/media_sizes.json.tmp');
+    final target = File('$directory/media_sizes.json');
+    tmp.writeAsStringSync(
+      jsonEncode(<String, Object?>{
+        'version': 1,
+        'indexModifiedMs': indexModifiedMs,
+        'sizes': sizes,
+      }),
+    );
+    tmp.renameSync(target.path);
+  } catch (_) {
+    // Disk cache write failures are non-fatal.
   }
 }
