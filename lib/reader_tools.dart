@@ -1223,6 +1223,13 @@ class _ReaderToolsState extends State<ReaderTools>
     required bool compact,
     required String category,
   }) => _settingsItems([
+    if (category == 'turn')
+      _switch(
+        context,
+        '点击图片预览',
+        _readerPreferences.tapImagePreview,
+        (v) => _preferences(_readerPreferences.copyWith(tapImagePreview: v)),
+      ),
     if (category == 'page')
       _adjustment(
         GlassChoiceGroup<String>(
@@ -1783,13 +1790,6 @@ class _ReaderToolsState extends State<ReaderTools>
   List<Widget> _behaviorItems(BuildContext context, String category) {
     final prefs = _readerPreferences;
     return [
-      if (category == 'turn')
-        _switch(
-          context,
-          '点击图片预览',
-          prefs.tapImagePreview,
-          (v) => _preferences(prefs.copyWith(tapImagePreview: v)),
-        ),
       if (category == 'turn' &&
           isLocalBook(widget.novel.id) &&
           widget.listeningBuilder != null)
