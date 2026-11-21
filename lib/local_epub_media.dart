@@ -43,7 +43,7 @@ class LocalEpubMediaWorker {
   Future<SendPort>? _starting;
   int _nextRequestId = 0;
   final Map<int, Completer<Map<String, LocalBookImageResult>>> _inflight = {};
-
+final Map<int, Completer<Map<String, ({int width, int height})>>> _sizeInflight = {};
   Future<SendPort> _ensureStarted() {
     if (_sendPort case final port?) return Future.value(port);
     return _starting ??= _start();
@@ -63,6 +63,21 @@ class LocalEpubMediaWorker {
       if (message is Map) {
         final id = message['id'] as int?;
         if (id == null) return;
+        if (message['kind'] == 'sizes') {
+          final sizeCompleter = _sizeInflight.remove(id);
+          if (sizeCompleter == null || sizeCompleter.isCompleted) return;
+          final rawSizes = message['sizes'] as Map? ?? const {};
+          final parsed = <String, ({int width, int height})>{};
+          for (final entry in rawSizes.entries) {
+            final name = entry.key as String;
+            final pair = entry.value;
+            if (pair is List && pair.length == 2) {
+              parsed[name] = (width: pair[0] as int, height: pair[1] as int);
+            }
+          }
+          sizeCompleter.complete(parsed);
+          return;
+        }
         final completer = _inflight.remove(id);
         if (completer == null || completer.isCompleted) return;
         final fatal = message['fatal'] as String?;
@@ -134,6 +149,26 @@ class LocalEpubMediaWorker {
     throw FormatException(result?.error ?? '原书插图无法读取');
   }
 
+  /// Probes width/height for a batch of local images in a single worker round
+  /// trip using header-only reads, avoiding full-image I/O during pagination.
+  Future<Map<String, ({int width, int height})>> probeImageSizes(
+    String directory,
+    List<String> names,
+  ) async {
+    if (names.isEmpty) return {};
+    final port = await _ensureStarted();
+    final id = ++_nextRequestId;
+    final completer = Completer<Map<String, ({int width, int height})>>();
+    _sizeInflight[id] = completer;
+    port.send(<String, Object?>{
+      'op': 'probe_sizes',
+      'id': id,
+      'directory': directory,
+      'names': names,
+    });
+    return completer.future;
+  }
+
   /// Closes the cached [RandomAccessFile] and index for [directory] immediately.
   void evictDirectory(String directory) {
     _sendPort?.send(<String, Object?>{
@@ -162,6 +197,12 @@ class LocalEpubMediaWorker {
       }
     }
     _inflight.clear();
+    for (final completer in _sizeInflight.values) {
+      if (!completer.isCompleted) {
+        completer.complete(const {});
+      }
+    }
+    _sizeInflight.clear();
   }
 
   static void _workerEntryPoint(SendPort mainPort) {
@@ -214,6 +255,41 @@ class LocalEpubMediaWorker {
         }
         sessions.clear();
         idleTimer?.cancel();
+        return;
+      }
+      if (op == 'probe_sizes') {
+        final id = message['id'] as int;
+        final directory = message['directory'] as String;
+        final names = (message['names'] as List).cast<String>();
+        final sizes = <String, List<int>>{};
+        final archived = <String>[];
+        for (final name in names) {
+          final file = File('$directory/$name');
+          if (file.existsSync()) {
+            final dims = _probeLocalFileHeader(file);
+            if (dims != null) {
+              sizes[name] = [dims.width, dims.height];
+            }
+          } else {
+            archived.add(name);
+          }
+        }
+        if (archived.isNotEmpty) {
+          try {
+            final session = _openOrReuseSession(sessions, directory);
+            touchSession(directory, session);
+            session.lastUsed = DateTime.now();
+            rescheduleIdleSweep();
+            sizes.addAll(session.probeSizes(archived));
+          } catch (_) {
+            closeSession(directory);
+          }
+        }
+        mainPort.send(<String, Object?>{
+          'id': id,
+          'kind': 'sizes',
+          'sizes': sizes,
+        });
         return;
       }
       if (op != 'read') return;
@@ -408,6 +484,30 @@ class _WorkerBookSession {
     return items;
   }
 
+  Map<String, List<int>> probeSizes(List<String> names) {
+    final result = <String, List<int>>{};
+    if (recoverDamagedEpub || raf == null || zipIndex == null) return result;
+    for (final name in names) {
+      final path = mediaEntries[name];
+      if (path == null) continue;
+      final zipEntry = zipIndex![path];
+      if (zipEntry == null) continue;
+      try {
+        final dims = probeIndexedLocalBookImageSize(
+          raf!,
+          zipEntry,
+          maxEntryBytes: maxLocalEpubImageBytes,
+        );
+        if (dims != null) {
+          result[name] = [dims.width, dims.height];
+        }
+      } catch (_) {
+        // Leave unprobed so caller can fall back to full decoding if needed.
+      }
+    }
+    return result;
+  }
+
   void close() {
     try {
       raf?.closeSync();
@@ -519,5 +619,28 @@ Map<String, LocalBookImageResult> readLocalEpubImagesFromInput(
     throw const FormatException('原书插图无法读取，请重新导入完整原书');
   } finally {
     buffer.close();
+  }
+}
+
+({int width, int height})? _probeLocalFileHeader(File file) {
+  RandomAccessFile? raf;
+  try {
+    final length = file.lengthSync();
+    if (length <= 0 || length > maxLocalEpubImageBytes) return null;
+    raf = file.openSync(mode: FileMode.read);
+    for (final cap in const [16384, 65536]) {
+      final toRead = length < cap ? length : cap;
+      raf.setPositionSync(0);
+      final slice = raf.readSync(toRead);
+      final dims = probeImageDimensionsFromHeader(slice);
+      if (dims != null || toRead == length) return dims;
+    }
+    return null;
+  } catch (_) {
+    return null;
+  } finally {
+    try {
+      raf?.closeSync();
+    } catch (_) {}
   }
 }
